@@ -219,7 +219,7 @@ function bindSheet(s) {
   const needs = s.spec.needs.map((need) => {
     const c = candidates(need);
     const choice = s.choice[need.slot];
-    const opts = c.all.map((m) => `<option value="${esc(m.table)}" ${choice.table === m.table ? 'selected' : ''} ${m.ok ? '' : 'disabled'}>${esc(m.table)}${m.table === c.suggested ? ' (suggested)' : m.ok ? '' : ' (columns don\'t fit)'}</option>`).join('');
+    const opts = [...c.all].sort((a, b) => (b.table === c.suggested) - (a.table === c.suggested) || b.ok - a.ok).map((m) => `<option value="${esc(m.table)}" ${choice.table === m.table ? 'selected' : ''} ${m.ok ? '' : 'disabled'}>${esc(m.table)}${m.table === c.suggested ? ' (suggested)' : m.ok ? '' : ' (columns don\'t fit)'}</option>`).join('');
     let detail;
     if (choice.table === '__new__') {
       detail = `<label class="row field"><span class="field-label">Name</span><input type="text" data-input="bind-name" data-slot="${esc(need.slot)}" value="${esc(choice.newName)}" autocapitalize="off" autocomplete="off"></label>
@@ -274,7 +274,7 @@ function uninstallSheet(s) {
   const lines = tables.map((t) => `<div class="row"><span class="item-main"><span class="item-title">${esc(t)}</span></span><span class="item-value small">${rowCount(t)} rows stay</span></div>`).join('');
   return `<div class="sheet-head">${appIcon(i.spec)}<div><h2>Uninstall ${esc(i.spec.name)}?</h2><p>Only the interface is removed. Your data stays in your database, and other interfaces keep working.</p></div></div>
     <div class="card">${lines}</div>
-    <div class="sheet-actions"><button class="btn" data-act="close-sheet">Cancel</button><button class="btn danger" data-act="confirm-uninstall">Uninstall, keep data</button></div>`;
+    <div class="sheet-actions"><button class="btn" data-act="close-sheet">Cancel</button><button class="btn danger" data-act="confirm-uninstall">Uninstall</button></div>`;
 }
 
 function historySheet(s) {
@@ -551,9 +551,11 @@ const actions = {
 
 // ---------- events ----------
 
-let suppressClick = false;
+// After a long-press opens a menu, ignore the click from lifting the finger
+// unless it lands on a button inside the sheet.
+let suppressUntil = 0;
 $app.addEventListener('click', (e) => {
-  if (suppressClick) { suppressClick = false; e.preventDefault(); return; }
+  if (Date.now() < suppressUntil && !e.target.closest('.sheet')) { e.preventDefault(); return; }
   const el = e.target.closest('[data-act]');
   if (!el || el.disabled) return;
   const fn = actions[el.dataset.act];
@@ -602,8 +604,7 @@ $app.addEventListener('pointerdown', (e) => {
   if (!tile) return;
   cancelPress();
   pressTimer = setTimeout(() => {
-    suppressClick = true;
-    setTimeout(() => { suppressClick = false; }, 800);
+    suppressUntil = Date.now() + 450;
     actions.menu(tile);
   }, 480);
 });

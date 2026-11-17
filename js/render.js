@@ -183,7 +183,7 @@ export function ruleOptions(iface, b) {
   return { sorts, filters };
 }
 
-function listBlock(b, i, h, iface) {
+function listBlock(b, i, h, iface, open) {
   const keys = [...new Set([b.cols.title, b.cols.subtitle, b.cols.value].filter(Boolean))];
   const sel = keys.map((k) => `${h.C(b.slot, k)} AS ${qi(k)}`).join(', ');
   const params = [];
@@ -199,19 +199,29 @@ function listBlock(b, i, h, iface) {
       ${b.cols.value ? `<span class="item-value">${esc(fmt(r[b.cols.value], m(b.cols.value)))}</span>` : ''}
     </div>`).join('');
   const rule = b.rule ? `<button class="rule-bar" data-act="edit-rule" data-block="${i}">
-      <span class="rule-text"><span class="rule-cap">Ranking rule</span>${esc(describeRule(b, iface))}</span><span class="rule-edit">Edit ranking rule</span></button>` : '';
+      <span class="rule-text"><span class="rule-cap">Ranking rule</span>${esc(describeRule(b, iface))}</span><span class="rule-edit">${open ? 'Done' : 'Edit ranking rule'}</span></button>` : '';
+  let panel = '';
+  if (b.rule && open) {
+    const o = ruleOptions(iface, b);
+    const cur = b.sort ? `${b.sort.col}:${b.sort.dir}` : '';
+    panel = `<div class="rule-panel">
+      <label class="row field"><span class="field-label">Sort by</span><select data-change="rule-sort" data-block="${i}">${o.sorts.map((s) => `<option value="${esc(s.col)}:${s.dir}" ${cur === `${s.col}:${s.dir}` ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}</select></label>
+      ${o.filters.map((f) => `<label class="row field"><span class="field-label">Only ${esc(f.label.toLowerCase())}</span><select data-change="rule-filter" data-col="${esc(f.col)}" data-block="${i}"><option value="">All</option>${f.values.map((v) => `<option ${b.filter && b.filter.col === f.col && b.filter.value === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>`).join('')}
+      <label class="row field"><span class="field-label">Show</span><select data-change="rule-limit" data-block="${i}">${[3, 5, 10].map((n) => `<option value="${n}" ${Number(b.limit) === n ? 'selected' : ''}>Top ${n}</option>`).join('')}</select></label>
+    </div>`;
+  }
   return `<section class="block">${b.title ? `<h3 class="block-title">${esc(b.title)}</h3>` : ''}
-    <div class="card">${rule}${items || '<p class="empty">Nothing here yet.</p>'}</div></section>`;
+    <div class="card">${rule}${panel}${items || '<p class="empty">Nothing matches this rule.</p>'}</div></section>`;
 }
 
-export function renderBlocks(iface) {
+export function renderBlocks(iface, opts = {}) {
   const h = helpers(iface);
   return iface.spec.blocks.map((b, i) => {
     try {
       if (b.type === 'form') return formBlock(b, i, h);
       if (b.type === 'stats') return statsBlock(b, h);
       if (b.type === 'chart') return chartBlock(b, h);
-      if (b.type === 'list') return listBlock(b, i, h, iface);
+      if (b.type === 'list') return listBlock(b, i, h, iface, opts.ruleOpen === i);
       if (b.type === 'note') return `<section class="block"><p class="note-block">${esc(b.text)}</p></section>`;
       return '';
     } catch (e) {

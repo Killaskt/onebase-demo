@@ -1,7 +1,7 @@
 // Offline support. Everything the app needs is precached on install.
 // Requests go network-first so a new deploy shows up immediately when online,
 // and fall back to the cache when offline.
-const CACHE = 'onebase-v1';
+const CACHE = 'onebase-v2';
 const FILES = [
   './',
   'index.html',
@@ -22,7 +22,7 @@ const FILES = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -37,7 +37,7 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
   e.respondWith(
-    fetch(req)
+    fetch(req, { cache: 'no-cache' })
       .then((res) => {
         if (res.ok) {
           const copy = res.clone();

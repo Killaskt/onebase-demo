@@ -110,7 +110,9 @@ export function candidates(need) {
   const all = userTables().map((t) => matchTable(need, t));
   const ok = all.filter((m) => m.ok).sort((a, b) => b.nameMatches - a.nameMatches);
   const slotHit = ok.find((m) => m.table.toLowerCase() === need.slot.toLowerCase());
-  const best = slotHit || (ok[0] && ok[0].nameMatches > 0 ? ok[0] : null);
+  // Only suggest a table when it clearly is the one meant: same name as the slot,
+  // or every needed column present by name. Otherwise suggest creating a new table.
+  const best = slotHit || ok.find((m) => m.nameMatches === need.columns.length) || null;
   return { all, suggested: best ? best.table : null };
 }
 

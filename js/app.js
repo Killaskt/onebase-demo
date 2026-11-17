@@ -6,6 +6,7 @@ import { getKey, setKey, askModel, scriptedNew, scriptedEdit, scriptedSuggestion
 
 const $app = document.getElementById('app');
 const clone = (o) => JSON.parse(JSON.stringify(o));
+const rowsText = (n) => `${n} row${n === 1 ? '' : 's'}`;
 const state = { tab: 'home', view: null, sheet: null, toast: null };
 
 // ---------- interface store (bookkeeping tables in the same database) ----------
@@ -89,7 +90,7 @@ const appIcon = (spec, cls = '') => `<span class="app-icon ${cls}" style="backgr
 function dbSummary() {
   const tables = userTables();
   const rows = tables.reduce((n, t) => n + rowCount(t), 0);
-  return `${tables.length} table${tables.length === 1 ? '' : 's'} · ${rows} rows`;
+  return `${tables.length} table${tables.length === 1 ? '' : 's'} · ${rowsText(rows)}`;
 }
 
 function homeScreen() {
@@ -141,7 +142,7 @@ function dataScreen() {
     const head = `<tr><th>id</th>${cols.map((c) => `<th>${esc(c.name)}<small>${esc(c.kind)}</small></th>`).join('')}</tr>`;
     const body = rows.map((r) => `<tr><td class="dim">${esc(r.id)}</td>${cols.map((c) => `<td>${esc(r[c.name] ?? '')}</td>`).join('')}</tr>`).join('');
     return `<section class="block">
-      <div class="table-head"><h3 class="table-name">${esc(t)}</h3><span class="count">${rowCount(t)} rows</span></div>
+      <div class="table-head"><h3 class="table-name">${esc(t)}</h3><span class="count">${rowsText(rowCount(t))}</span></div>
       <p class="used-by">${users.length ? `Used by ${esc(users.join(', '))}` : 'Not used by any interface right now'}</p>
       <div class="card table-wrap"><table class="grid-table"><thead>${head}</thead><tbody>${body || `<tr><td colspan="${cols.length + 1}" class="dim">No rows yet</td></tr>`}</tbody></table></div>
     </section>`;
@@ -271,7 +272,7 @@ function menuSheet(s) {
 function uninstallSheet(s) {
   const i = getIface(s.id);
   const tables = [...new Set(Object.values(i.bindings).map((b) => b.table))];
-  const lines = tables.map((t) => `<div class="row"><span class="item-main"><span class="item-title">${esc(t)}</span></span><span class="item-value small">${rowCount(t)} rows stay</span></div>`).join('');
+  const lines = tables.map((t) => `<div class="row"><span class="item-main"><span class="item-title">${esc(t)}</span></span><span class="item-value small">${rowsText(rowCount(t))} stay${rowCount(t) === 1 ? 's' : ''}</span></div>`).join('');
   return `<div class="sheet-head">${appIcon(i.spec)}<div><h2>Uninstall ${esc(i.spec.name)}?</h2><p>Only the interface is removed. Your data stays in your database, and other interfaces keep working.</p></div></div>
     <div class="card">${lines}</div>
     <div class="sheet-actions"><button class="btn" data-act="close-sheet">Cancel</button><button class="btn danger" data-act="confirm-uninstall">Uninstall</button></div>`;
@@ -461,7 +462,7 @@ const actions = {
     state.sheet = null;
     state.view = null;
     state.tab = 'home';
-    toast(`${i.spec.name} removed. ${tables.map((t) => `${t}: ${rowCount(t)} rows kept`).join(', ')}`);
+    toast(`${i.spec.name} removed. ${tables.map((t) => `${t}: ${rowsText(rowCount(t))} kept`).join(', ')}`);
     render();
   },
   history() { state.sheet = { kind: 'history', id: state.view.id, fresh: true }; render(); },

@@ -107,7 +107,7 @@ export function kindOf(declaredType) {
 // The user's tables. App bookkeeping lives in _ob_* tables and is not listed.
 export function userTables() {
   return query(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_ob\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name"
+    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_ob\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY rowid"
   ).map((r) => r.name);
 }
 

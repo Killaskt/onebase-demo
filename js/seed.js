@@ -126,14 +126,25 @@ export const CATALOG = [
   { key: 'reading', placeholder: { name: 'Reading List', icon: '📚', color: '#0b7285', description: 'Books finished, with ratings and notes.' } },
 ];
 
+// App bookkeeping tables. Created with seed data on first run, or on their own
+// for a database that doesn't have them yet (for example a restored file).
+const META = [
+  'CREATE TABLE IF NOT EXISTS _ob_interfaces (id TEXT PRIMARY KEY, spec TEXT, bindings TEXT, chat TEXT, position INTEGER, source TEXT)',
+  'CREATE TABLE IF NOT EXISTS _ob_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, iface TEXT, spec TEXT, note TEXT, at TEXT)',
+];
+export const META_SQL = META;
+
+export function ensureMeta() {
+  batch((exec) => META.forEach((sql) => exec(sql)));
+}
+
 export function seed(installInterface) {
   batch((exec) => {
     exec('CREATE TABLE games (id INTEGER PRIMARY KEY AUTOINCREMENT, date DATE, score INTEGER, location TEXT)');
     exec('CREATE TABLE expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, date DATE, amount REAL, category TEXT)');
     for (const [d, s, l] of GAMES) exec('INSERT INTO games (date, score, location) VALUES (?, ?, ?)', [daysAgo(d), s, l]);
     for (const [d, a, c] of EXPENSES) exec('INSERT INTO expenses (date, amount, category) VALUES (?, ?, ?)', [daysAgo(d), a, c]);
-    exec('CREATE TABLE _ob_interfaces (id TEXT PRIMARY KEY, spec TEXT, bindings TEXT, chat TEXT, position INTEGER, source TEXT)');
-    exec('CREATE TABLE _ob_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, iface TEXT, spec TEXT, note TEXT, at TEXT)');
+    META.forEach((sql) => exec(sql));
   });
   for (const item of CATALOG.filter((c) => c.spec)) {
     const slot = item.spec.needs[0];

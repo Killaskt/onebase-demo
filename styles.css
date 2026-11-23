@@ -316,3 +316,22 @@ svg.sm { width: 15px; height: 15px; flex: none; }
 
 @media (prefers-color-scheme: dark) { .toast { background: rgba(72, 72, 78, 0.96); } }
 .rule-panel .field-label, .need .field-label { width: auto; white-space: nowrap; }
+
+/* ---------- data safety: banners, blocking screens, storage status ---------- */
+.dot-live.off { background: var(--faint); }
+.banner { flex: none; display: flex; align-items: center; gap: 10px; margin: 0 12px 6px; padding: 10px 12px; border-radius: 12px; font-size: 13.5px; line-height: 1.35; background: var(--card); box-shadow: 0 1px 0 var(--line); }
+.banner > span { flex: 1; }
+.banner.danger { background: rgba(210, 63, 49, 0.12); color: var(--text); }
+.banner.danger b { color: var(--danger); }
+.banner .close { flex: none; width: 28px; height: 28px; border-radius: 50%; color: var(--muted); font-size: 18px; line-height: 1; }
+.btn.small { min-height: 34px; padding: 0 12px; font-size: 14px; border-radius: 10px; flex: none; }
+.blocker { margin: auto; padding: 28px 24px; max-width: 360px; text-align: center; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+.blocker h2 { font-size: 20px; }
+.blocker p { color: var(--muted); font-size: 14.5px; line-height: 1.45; }
+.blocker p.dim { color: var(--faint); font-size: 13px; }
+.blocker-ico { width: 56px; height: 56px; border-radius: 16px; display: grid; place-items: center; background: var(--fill); color: var(--accent); }
+.blocker-ico svg { width: 28px; height: 28px; }
+.badge.ok { background: rgba(47, 158, 91, 0.15); color: var(--ok); }
+.storage-card { margin-bottom: 12px; padding-bottom: 4px; }
+.storage-card .row::before { display: none; }
+.wide-in { display: flex; width: calc(100% - 28px); margin: 0 14px 10px; }

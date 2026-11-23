@@ -1,5 +1,10 @@
-import { initDb, query, batch, run, userTables, columns, rowCount, schemaSummary, createTable, exportBytes, validIdent, qi } from './db.js';
-import { seed, isSeeded, CATALOG } from './seed.js';
+import {
+  openFromStore, loadSql, claimWriter, setWritable, isWritable, onSaveState, getSaveState, retrySave, whenSaved,
+  query, batch, run, userTables, columns, rowCount, schemaSummary, createTable, exportBytes, validIdent, qi,
+  NotOwnerError, ExistsError,
+} from './db.js';
+import { createWriterLock } from './lock.js';
+import { seed, isSeeded, ensureMeta, CATALOG } from './seed.js';
 import { validateSpec, candidates, matchTable, reconcile, accessLabel } from './spec.js';
 import { renderBlocks, submitForm, describeRule, esc, fmtDate } from './render.js';
 import { getKey, setKey, askModel, scriptedNew, scriptedEdit, scriptedSuggestions, SCRIPTED_NEW } from './agent.js';
@@ -7,7 +12,8 @@ import { getKey, setKey, askModel, scriptedNew, scriptedEdit, scriptedSuggestion
 const $app = document.getElementById('app');
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const rowsText = (n) => `${n} row${n === 1 ? '' : 's'}`;
-const state = { tab: 'home', view: null, sheet: null, toast: null };
+// block: a full-screen state that replaces the app (loading, read error, other tab).
+const state = { tab: 'home', view: null, sheet: null, toast: null, block: { kind: 'loading' }, storage: { supported: false, persisted: null } };
 
 // ---------- interface store (bookkeeping tables in the same database) ----------
 
@@ -74,10 +80,54 @@ const ICON = {
 // ---------- screens ----------
 
 function topbar() {
+  const online = navigator.onLine !== false;
   return `<header class="topbar">
-    <span class="pill" title="Everything is stored in this browser on this device"><span class="dot-live"></span>Offline · on this device</span>
+    <span class="pill" title="Your database is stored in this browser on this device"><span class="dot-live ${online ? '' : 'off'}"></span>On this device${online ? '' : ' · offline'}</span>
     <button class="icon-btn" data-act="key" aria-label="API key">${ICON.key}</button>
-  </header>`;
+  </header>${saveBanner()}`;
+}
+
+function saveBanner() {
+  const s = getSaveState();
+  if (s.status !== 'error') return '';
+  const e = s.error || {};
+  const why = e.name === 'QuotaExceededError' ? 'This device is out of storage space for OneBase.'
+    : e.message ? e.message : 'The browser refused the write.';
+  return `<div class="banner danger" role="alert"><span><b>Your last change wasn't saved.</b> ${esc(why)} It is still on screen; retry to save it.</span>
+    <button class="btn small" data-act="retry-save">Retry</button></div>`;
+}
+
+// ---------- blocking screens ----------
+
+function blockScreen() {
+  const b = state.block;
+  if (b.kind === 'loading') return '<div class="boot">OneBase</div>';
+  if (b.kind === 'read-error') {
+    return `<div class="blocker" role="alertdialog" aria-labelledby="blk-h">
+      <div class="blocker-ico">${ICON.data}</div>
+      <h2 id="blk-h">Couldn't open your data</h2>
+      <p>${esc(b.message)}</p>
+      <p class="dim">Nothing was changed or replaced. Your saved database is left exactly as it was.</p>
+      <button class="btn primary wide" data-act="retry-open" ${b.busy ? 'disabled' : ''}>${b.busy ? 'Trying…' : 'Try again'}</button>
+    </div>`;
+  }
+  if (b.kind === 'exists') {
+    return `<div class="blocker" role="alertdialog" aria-labelledby="blk-h">
+      <h2 id="blk-h">Saved data found</h2>
+      <p>OneBase found saved data while it was starting fresh. Nothing was overwritten.</p>
+      <button class="btn primary wide" data-act="reload">Reload</button>
+    </div>`;
+  }
+  if (b.kind === 'other-tab') {
+    return `<div class="blocker" role="alertdialog" aria-labelledby="blk-h">
+      <div class="blocker-ico">${ICON.lock}</div>
+      <h2 id="blk-h">OneBase is open in another tab</h2>
+      <p>${b.lost ? 'Another tab or window took over. Your data is safe there, and this tab has stopped saving so it can\'t overwrite it.' : 'Only one tab can change your data at a time, so nothing gets overwritten.'}</p>
+      <button class="btn primary wide" data-act="take-over">Use OneBase here instead</button>
+      <p class="dim">The other tab will stop saving. This tab opens as soon as the other one closes, too.</p>
+    </div>`;
+  }
+  return '';
 }
 
 function tabbar() {
@@ -150,9 +200,23 @@ function dataScreen() {
   return `<main class="scroll">
     <h1 class="large-title">My Data</h1>
     <p class="lede">The raw tables in your SQLite database. They belong to you, not to any interface.</p>
+    ${storageCard()}
     <button class="btn wide" data-act="export">Export database</button>
     ${tables}
   </main>`;
+}
+
+function storageCard() {
+  const st = state.storage;
+  let status, detail, ask = false;
+  if (!st.supported) { status = 'Not reported'; detail = 'This browser doesn\'t say whether it may clear site data. Export a backup now and then.'; }
+  else if (st.persisted) { status = 'Persistent'; detail = 'The browser has agreed not to clear your database to free up space.'; }
+  else { status = 'Best effort'; detail = 'The browser may clear your database if the device runs low on space. Installing the app helps.'; ask = true; }
+  return `<div class="card storage-card">
+    <div class="row"><span class="item-main"><span class="item-title">Storage</span><span class="item-sub">${esc(detail)}</span></span>
+    <span class="badge ${st.persisted ? 'ok' : 'read'}">${esc(status)}</span></div>
+    ${ask ? '<button class="btn small wide-in" data-act="persist-ask">Ask the browser to keep it</button>' : ''}
+  </div>`;
 }
 
 function privacyNote() {
@@ -310,6 +374,11 @@ function sheetHtml() {
 
 let lastKey = '';
 function render() {
+  if (state.block) {
+    $app.innerHTML = blockScreen();
+    lastKey = '';
+    return;
+  }
   const v = state.view;
   const key = v ? `${v.type}:${v.id || ''}:${v.side || ''}` : `tab:${state.tab}`;
   const old = $app.querySelector('.scroll');
@@ -537,6 +606,11 @@ const actions = {
     state.view.ruleOpen = state.view.ruleOpen === i ? null : i;
     render();
   },
+  'retry-save'() { retrySave().then((ok) => { toast(ok ? 'Saved' : 'Still not saved'); render(); }); },
+  'retry-open'() { state.block = { ...state.block, busy: true }; render(); becomeWriter(); },
+  reload() { location.reload(); },
+  'take-over'() { state.block = { kind: 'loading' }; render(); writerLock.takeOver(); },
+  'persist-ask'() { requestPersistence(true); },
   export() {
     const blob = new Blob([exportBytes()], { type: 'application/vnd.sqlite3' });
     const a = document.createElement('a');
@@ -576,7 +650,11 @@ $app.addEventListener('submit', (e) => {
   }
   try {
     const table = submitForm(getIface(state.view.id), Number(kind), new FormData(form));
-    toast(`Saved to ${table}`);
+    toast(`Saving to ${table}…`);
+    whenSaved().then((ok) => {
+      if (ok) { toast(`Saved to ${table}`); requestPersistence(); } else { state.toast = null; }
+      render();
+    });
   } catch (err) {
     toast(err.message);
   }
@@ -620,17 +698,86 @@ $app.addEventListener('contextmenu', (e) => {
   actions.menu(tile);
 });
 
+// ---------- storage persistence ----------
+
+const isStandalone = () => navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+
+async function refreshStorage() {
+  const sto = navigator.storage;
+  if (!sto || !sto.persisted) { state.storage = { supported: false, persisted: null }; return; }
+  try { state.storage = { supported: true, persisted: await sto.persisted() }; } catch { state.storage = { supported: false, persisted: null }; }
+}
+
+// Ask once per session after the user has real data worth keeping (first save,
+// or on launch of the installed app), or whenever they tap the button.
+let askedPersist = false;
+async function requestPersistence(fromButton = false) {
+  const sto = navigator.storage;
+  if (!sto || !sto.persist || state.storage.persisted) { if (fromButton) toast('Not available in this browser'); return; }
+  if (askedPersist && !fromButton) return;
+  askedPersist = true;
+  try {
+    const granted = await sto.persist();
+    state.storage = { supported: true, persisted: granted };
+    if (fromButton) toast(granted ? 'The browser will keep your data' : 'The browser said no for now. Installing the app usually helps');
+  } catch (e) {
+    console.warn('storage.persist failed', e);
+  }
+  if (!state.block) render();
+}
+
 // ---------- boot ----------
 
-async function boot() {
+onSaveState((s) => {
+  if (s.status === 'error' && s.error instanceof NotOwnerError) { setWritable(false); state.sheet = null; state.block = { kind: 'other-tab', lost: true }; }
+  if (s.status === 'error' && s.error instanceof ExistsError) { setWritable(false); state.block = { kind: 'exists' }; }
+  if (s.status === 'error' || s.status === 'saved') render();
+});
+
+// Runs whenever this tab becomes the writer (first load, take-over, or the
+// other tab closing). The database is (re)read after the claim, so changes the
+// previous writer saved are picked up.
+async function becomeWriter() {
+  setWritable(false);
   try {
-    await initDb();
-    if (!isSeeded()) seed(installInterface);
+    await claimWriter();
+    const { fresh } = await openFromStore();
+    setWritable(true);
+    if (fresh) seed(installInterface);
+    else if (!isSeeded()) ensureMeta();
+    state.block = null;
+    state.view = null;
+    state.sheet = null;
+    await refreshStorage();
     render();
+    if (isStandalone()) requestPersistence();
+  } catch (e) {
+    console.error(e);
+    setWritable(false);
+    state.block = { kind: 'read-error', message: e.message || String(e) };
+    render();
+  }
+}
+
+const writerLock = createWriterLock({
+  granted: () => { becomeWriter(); },
+  busy: () => { setWritable(false); state.block = { kind: 'other-tab', lost: false }; render(); },
+  lost: () => { setWritable(false); state.sheet = null; state.block = { kind: 'other-tab', lost: true }; render(); },
+});
+
+addEventListener('online', () => { if (!state.block) render(); });
+addEventListener('offline', () => { if (!state.block) render(); });
+
+async function boot() {
+  render();
+  try {
+    await loadSql();
   } catch (e) {
     console.error(e);
     $app.innerHTML = `<div class="boot-error"><h2>OneBase couldn't start</h2><p>${esc(e.message || e)}</p></div>`;
+    return;
   }
+  writerLock.start();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch((e) => console.warn('service worker not registered', e));
 }
 boot();

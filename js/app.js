@@ -147,6 +147,7 @@ function homeScreen() {
   const list = loadInterfaces();
   const tiles = list.map((i) => `<button class="tile" data-act="open" data-id="${i.id}">${appIcon(i.spec, 'lg')}<span class="tile-name">${esc(i.spec.name)}</span></button>`).join('');
   return `<main class="scroll">
+    ${installPrompt()}
     <h1 class="large-title">OneBase</h1>
     <p class="lede">One database. Interfaces you can swap.</p>
     <div class="grid">${tiles}
@@ -159,6 +160,30 @@ function homeScreen() {
       <span class="db-text"><b>Your database</b><span>${esc(dbSummary())} · stays when interfaces go</span></span>${ICON.chev}
     </button>
   </main>`;
+}
+
+// iOS Safari keeps a Home Screen web app's storage separate from Safari's, and
+// Safari may clear site data after 7 days without a visit. So on iOS, in Safari,
+// ask people to install first and keep their data in the installed app.
+const A2HS_KEY = 'onebase.a2hsDismissed';
+function isIosSafari() {
+  const ua = navigator.userAgent || '';
+  const ios = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  return ios && /Safari\//.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|GSA\//.test(ua);
+}
+function showInstallPrompt() {
+  if (!isIosSafari() || isStandalone()) return false;
+  try { return localStorage.getItem(A2HS_KEY) !== '1'; } catch { return true; }
+}
+const SHARE_ICON = svg('<path d="M12 3v12M8 7l4-4 4 4"/><path d="M6 11H5v9h14v-9h-1"/>', 'class="inline"');
+function installPrompt() {
+  if (!showInstallPrompt()) return '';
+  return `<div class="card a2hs" role="note" aria-labelledby="a2hs-h">
+    <button class="close" data-act="a2hs-dismiss" aria-label="Dismiss">×</button>
+    <b id="a2hs-h">Add OneBase to your Home Screen first</b>
+    <p>Tap ${SHARE_ICON} <b>Share</b>, then <b>Add to Home Screen</b>, and open OneBase from there.</p>
+    <p class="dim">On iPhone the Home Screen app keeps its own data, separate from Safari, and Safari can clear website data you haven't opened for a week. Anything you add here in Safari stays in Safari.</p>
+  </div>`;
 }
 
 function needsLine(spec) {
@@ -611,6 +636,7 @@ const actions = {
   reload() { location.reload(); },
   'take-over'() { state.block = { kind: 'loading' }; render(); writerLock.takeOver(); },
   'persist-ask'() { requestPersistence(true); },
+  'a2hs-dismiss'() { try { localStorage.setItem(A2HS_KEY, '1'); } catch { /* private mode */ } render(); },
   export() {
     const blob = new Blob([exportBytes()], { type: 'application/vnd.sqlite3' });
     const a = document.createElement('a');

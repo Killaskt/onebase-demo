@@ -335,3 +335,10 @@ svg.sm { width: 15px; height: 15px; flex: none; }
 .storage-card { margin-bottom: 12px; padding-bottom: 4px; }
 .storage-card .row::before { display: none; }
 .wide-in { display: flex; width: calc(100% - 28px); margin: 0 14px 10px; }
+.a2hs { position: relative; padding: 14px 40px 12px 14px; margin: 4px 0 8px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.4; border: 1px solid rgba(47, 95, 208, 0.35); }
+.a2hs b#a2hs-h { font-size: 15px; }
+.a2hs p { color: var(--muted); }
+.a2hs p.dim { color: var(--faint); font-size: 12.5px; }
+.a2hs .close { position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; border-radius: 50%; color: var(--muted); font-size: 20px; line-height: 1; }
+.a2hs .close:active { background: var(--fill); }
+svg.inline { width: 17px; height: 17px; vertical-align: -3px; color: var(--accent); }

@@ -1,7 +1,7 @@
 // Offline support. Everything the app needs is precached on install.
 // Requests go network-first so a new deploy shows up immediately when online,
 // and fall back to the cache when offline.
-const CACHE = 'onebase-v2';
+const CACHE = 'onebase-v3';
 const FILES = [
   './',
   'index.html',
@@ -13,6 +13,7 @@ const FILES = [
   'js/spec.js',
   'js/render.js',
   'js/agent.js',
+  'js/lock.js',
   'vendor/sql-wasm.js',
   'vendor/sql-wasm.wasm',
   'icons/icon-192.png',

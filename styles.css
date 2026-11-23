@@ -342,3 +342,4 @@ svg.sm { width: 15px; height: 15px; flex: none; }
 .a2hs .close { position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; border-radius: 50%; color: var(--muted); font-size: 20px; line-height: 1; }
 .a2hs .close:active { background: var(--fill); }
 svg.inline { width: 17px; height: 17px; vertical-align: -3px; color: var(--accent); }
+.file-btn { cursor: pointer; margin-top: 10px; }

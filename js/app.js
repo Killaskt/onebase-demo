@@ -1,10 +1,10 @@
 import {
   openFromStore, loadSql, claimWriter, setWritable, isWritable, onSaveState, getSaveState, retrySave, whenSaved,
   query, batch, run, userTables, columns, rowCount, schemaSummary, createTable, exportBytes, validIdent, qi,
-  NotOwnerError, ExistsError,
+  NotOwnerError, ExistsError, inspectSqlite, replaceWith,
 } from './db.js';
 import { createWriterLock } from './lock.js';
-import { seed, isSeeded, ensureMeta, CATALOG } from './seed.js';
+import { seed, isSeeded, ensureMeta, META_SQL, CATALOG } from './seed.js';
 import { validateSpec, candidates, matchTable, reconcile, accessLabel } from './spec.js';
 import { renderBlocks, submitForm, describeRule, esc, fmtDate } from './render.js';
 import { getKey, setKey, askModel, scriptedNew, scriptedEdit, scriptedSuggestions, SCRIPTED_NEW } from './agent.js';
@@ -227,6 +227,8 @@ function dataScreen() {
     <p class="lede">The raw tables in your SQLite database. They belong to you, not to any interface.</p>
     ${storageCard()}
     <button class="btn wide" data-act="export">Export database</button>
+    <label class="btn wide file-btn">Restore from a .sqlite file…<input type="file" data-change="restore-file" hidden></label>
+    <p class="hint center">Restore replaces everything on this device. A backup of your current data downloads first.</p>
     ${tables}
   </main>`;
 }
@@ -385,11 +387,31 @@ function keySheet() {
     <div class="sheet-actions"><button class="btn" data-act="${k ? 'key-clear' : 'close-sheet'}">${k ? 'Remove key' : 'Cancel'}</button><button class="btn primary" data-act="key-save">Save</button></div>`;
 }
 
+function restoreSheet(s) {
+  const cur = currentSummary();
+  const sum = s.summary;
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  return `<div class="sheet-head"><span class="app-icon" style="background:#d23f31">⚠️</span><div><h2>Replace all your data?</h2>
+      <p>Everything on this device is replaced with <b>${esc(s.name)}</b>. This can't be merged or undone here.</p></div></div>
+    <div class="card">
+      <div class="row"><span class="item-main"><span class="item-title">From the file</span><span class="item-sub">${plural(sum.tables, 'table')} · ${rowsText(sum.rows)} · ${plural(sum.interfaces, 'interface')}</span></span></div>
+      <div class="row"><span class="item-main"><span class="item-title">On this device now</span><span class="item-sub">${plural(cur.tables, 'table')} · ${rowsText(cur.rows)} · ${plural(cur.interfaces, 'interface')}</span></span></div>
+    </div>
+    <p class="hint">${sum.hasMeta ? '' : 'The file has no OneBase interfaces. Its tables will show in My Data and you can install interfaces over them. '}Your current database downloads as <b>${esc(s.backupName)}</b> before anything is replaced.</p>
+    ${s.error ? `<p class="error">${esc(s.error)}</p>` : ''}
+    <div class="sheet-actions"><button class="btn" data-act="close-sheet">Cancel</button><button class="btn danger" data-act="confirm-restore" ${s.busy ? 'disabled' : ''}>${s.busy ? 'Restoring…' : 'Back up and replace'}</button></div>`;
+}
+
+function currentSummary() {
+  const tables = userTables();
+  return { tables: tables.length, rows: tables.reduce((n, t) => n + rowCount(t), 0), interfaces: isSeeded() ? loadInterfaces().length : 0 };
+}
+
 function sheetHtml() {
   const s = state.sheet;
   if (!s) return '';
   const body = s.kind === 'bind' ? bindSheet(s) : s.kind === 'menu' ? menuSheet(s) : s.kind === 'uninstall' ? uninstallSheet(s)
-    : s.kind === 'history' ? historySheet(s) : s.kind === 'key' ? keySheet() : '';
+    : s.kind === 'history' ? historySheet(s) : s.kind === 'key' ? keySheet() : s.kind === 'restore' ? restoreSheet(s) : '';
   const fresh = s.fresh ? 'enter' : '';
   s.fresh = false;
   return `<div class="scrim ${fresh}" data-act="scrim"></div><div class="sheet ${fresh}" role="dialog"><div class="grabber"></div>${body}</div>`;
@@ -638,17 +660,67 @@ const actions = {
   'persist-ask'() { requestPersistence(true); },
   'a2hs-dismiss'() { try { localStorage.setItem(A2HS_KEY, '1'); } catch { /* private mode */ } render(); },
   export() {
-    const blob = new Blob([exportBytes()], { type: 'application/vnd.sqlite3' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'onebase.sqlite';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    download(exportBytes(), 'onebase.sqlite');
     toast('Exported onebase.sqlite');
   },
+  async 'confirm-restore'() {
+    const s = state.sheet;
+    if (!s || s.kind !== 'restore' || s.busy) return;
+    if (!isWritable()) { s.error = 'OneBase is open in another tab, so nothing can be restored here.'; render(); return; }
+    s.busy = true;
+    s.error = null;
+    render();
+    download(exportBytes(), s.backupName);
+    let ok = false;
+    try {
+      ok = await replaceWith(s.bytes, (exec) => META_SQL.forEach((sql) => exec(sql)));
+    } catch (e) {
+      console.error(e);
+    }
+    if (!ok) {
+      s.busy = false;
+      s.error = 'Couldn\'t save the restored database. Your current data is unchanged.';
+      render();
+      return;
+    }
+    state.sheet = null;
+    state.view = null;
+    state.tab = 'data';
+    toast(`Restored ${s.name}`);
+    requestPersistence();
+    render();
+  },
 };
+
+function download(bytes, name) {
+  const blob = new Blob([bytes], { type: 'application/vnd.sqlite3' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+const stamp = () => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+};
+
+async function pickRestoreFile(input) {
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file) return;
+  if (!isWritable()) { toast('OneBase is open in another tab'); return; }
+  let bytes;
+  try { bytes = new Uint8Array(await file.arrayBuffer()); } catch (e) { toast('Couldn\'t read that file'); return; }
+  const res = await inspectSqlite(bytes);
+  if (!res.ok) { toast(res.error); render(); return; }
+  state.sheet = { kind: 'restore', fresh: true, name: file.name, bytes, summary: res.summary, backupName: `onebase-backup-${stamp()}.sqlite` };
+  render();
+}
 
 // ---------- events ----------
 
@@ -690,6 +762,7 @@ $app.addEventListener('submit', (e) => {
 $app.addEventListener('change', (e) => {
   const el = e.target;
   const c = el.dataset.change;
+  if (c === 'restore-file') { pickRestoreFile(el); return; }
   if (c === 'bind-table') { state.sheet.choice[el.dataset.slot].table = el.value; state.sheet.error = null; render(); }
   if (c === 'rule-sort') { const [col, dir] = el.value.split(':'); changeRule(Number(el.dataset.block), (b) => { b.sort = { col, dir }; }); }
   if (c === 'rule-filter') changeRule(Number(el.dataset.block), (b) => { b.filter = el.value === '' ? null : { col: el.dataset.col, value: el.value }; });

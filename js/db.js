@@ -237,6 +237,76 @@ export function exportBytes() {
   return db.export();
 }
 
+// ---------- restore ----------
+
+const HEADER = 'SQLite format 3\0';
+
+// Check that bytes are a SQLite database sql.js can open and OneBase can show.
+// Returns { ok, error } or { ok, summary }.
+export async function inspectSqlite(bytes) {
+  await loadSql();
+  if (!bytes || bytes.length < 100) return { ok: false, error: 'That file is too small to be a SQLite database.' };
+  const head = String.fromCharCode(...bytes.subarray(0, 16));
+  if (head !== HEADER) return { ok: false, error: 'That file is not a SQLite database.' };
+  let t;
+  try {
+    t = new SQL.Database(bytes);
+    const check = t.exec('PRAGMA quick_check');
+    const verdict = check[0] && check[0].values[0] && check[0].values[0][0];
+    if (verdict !== 'ok') return { ok: false, error: `The database is damaged (${verdict || 'integrity check failed'}).` };
+    const rowsOf = (sql) => { const r = t.exec(sql); return r[0] ? r[0].values : []; };
+    const tables = rowsOf("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_ob\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'").map((r) => r[0]);
+    for (const name of tables) {
+      if (!validIdent(name)) return { ok: false, error: `The table name "${name}" isn't supported yet (letters, digits and _ only).` };
+      for (const c of rowsOf(`PRAGMA table_info(${qi(name)})`)) {
+        if (!validIdent(c[1])) return { ok: false, error: `The column "${name}.${c[1]}" isn't supported yet (letters, digits and _ only).` };
+      }
+    }
+    let interfaces = 0;
+    const hasMeta = rowsOf("SELECT name FROM sqlite_master WHERE type='table' AND name='_ob_interfaces'").length > 0;
+    if (hasMeta) {
+      try {
+        const list = rowsOf('SELECT id, spec, bindings, chat, position, source FROM _ob_interfaces');
+        for (const [, spec, bindings, chat] of list) { JSON.parse(spec); JSON.parse(bindings); JSON.parse(chat); }
+        rowsOf('SELECT id, iface, spec, note, at FROM _ob_versions LIMIT 1');
+        interfaces = list.length;
+      } catch (e) {
+        return { ok: false, error: 'The OneBase interface data in that file is damaged.' };
+      }
+    }
+    const rows = tables.reduce((n, name) => n + rowsOf(`SELECT COUNT(*) FROM ${qi(name)}`)[0][0], 0);
+    return { ok: true, summary: { tables: tables.length, rows, interfaces, hasMeta } };
+  } catch (e) {
+    return { ok: false, error: `sql.js couldn't open that file (${e.message || e}).` };
+  } finally {
+    if (t) t.close();
+  }
+}
+
+// Replace the whole database with bytes (already checked with inspectSqlite).
+// prepare(exec) can add missing bookkeeping tables before the save. If the save
+// fails, the previous database stays both in memory and in IndexedDB.
+export async function replaceWith(bytes, prepare) {
+  guard();
+  const old = db;
+  const next = new SQL.Database(bytes);
+  try {
+    if (prepare) prepare((sql, params = []) => next.run(sql, params));
+  } catch (e) {
+    next.close();
+    throw e;
+  }
+  db = next;
+  const ok = await persist();
+  if (!ok) {
+    db = old;
+    next.close();
+    return false;
+  }
+  old.close();
+  return true;
+}
+
 // ---------- schema helpers ----------
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;

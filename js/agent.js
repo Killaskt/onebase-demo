@@ -4,8 +4,12 @@
 import { validateSpec } from './spec.js';
 
 const KEY_STORE = 'onebase.apiKey';
-export const getKey = () => { try { return localStorage.getItem(KEY_STORE) || ''; } catch { return ''; } };
-export const setKey = (k) => { try { k ? localStorage.setItem(KEY_STORE, k) : localStorage.removeItem(KEY_STORE); } catch { /* private mode */ } };
+// Pasted keys can carry invisible characters (zero-width spaces, line breaks,
+// non-breaking spaces). Any non-ASCII character in a header makes fetch() throw
+// a TypeError before the request is sent, so strip them on save and on read.
+const cleanKey = (k) => String(k || '').replace(/[\s\u200B-\u200D\u2060\uFEFF]/g, '');
+export const getKey = () => { try { return cleanKey(localStorage.getItem(KEY_STORE)); } catch { return ''; } };
+export const setKey = (k) => { try { const c = cleanKey(k); c ? localStorage.setItem(KEY_STORE, c) : localStorage.removeItem(KEY_STORE); } catch { /* private mode */ } };
 
 const MODEL = 'claude-opus-5-5';
 
@@ -40,33 +44,59 @@ function extractSpec(text) {
   return { reply: text.replace(m[0], '').trim(), spec, error };
 }
 
+const TIMEOUT_MS = 120000;
+
+// Why the request never got an HTTP response, in words the user can act on.
+function reachError(e, timedOut) {
+  if (timedOut) return new Error('Couldn\'t reach Claude: no answer after 2 minutes. Check your connection and try again.');
+  const msg = (e && e.message) || String(e);
+  let hint = 'Check your connection, keep OneBase open while Claude works, and turn off any VPN or content blocker for this app, then try again.';
+  if (/ISO-8859-1|header|invalid value/i.test(msg)) hint = 'Your API key contains characters that can\'t be sent. Remove it in the key settings and paste it again.';
+  return new Error(`Couldn't reach Claude: ${msg}. ${hint}`);
+}
+
 async function post(key, messages) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': key,
-      'anthropic-version': '2026-10-21',
-      'anthropic-beta': 'server-side-fallback-2026-07-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 16000,
-      output_config: { effort: 'low' },
-      fallbacks: 'default',
-      system: SYSTEM,
-      messages,
-    }),
-  });
-  if (!res.ok) {
-    let detail = '';
-    try { detail = (await res.json()).error?.message || ''; } catch { /* not JSON */ }
-    if (res.status === 401) throw new Error('That API key was rejected. Check it in the key settings.');
-    if (res.status === 429) throw new Error('Rate limited. Wait a moment and try again.');
-    throw new Error(`The model returned an error (${res.status}). ${detail}`.trim());
+  if (!/^[\x21-\x7E]+$/.test(key)) throw new Error('Your API key contains characters that can\'t be sent. Remove it in the key settings and paste it again.');
+  const ctl = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, TIMEOUT_MS);
+  let res;
+  let body;
+  try {
+    res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      signal: ctl.signal,
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2026-10-21',
+        'anthropic-beta': 'server-side-fallback-2026-07-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 16000,
+        output_config: { effort: 'low' },
+        fallbacks: 'default',
+        system: SYSTEM,
+        messages,
+      }),
+    });
+    body = await res.text();
+  } catch (e) {
+    throw reachError(e, timedOut);
+  } finally {
+    clearTimeout(timer);
   }
-  const data = await res.json();
+  let data = null;
+  try { data = JSON.parse(body); } catch { /* not JSON */ }
+  if (!res.ok) {
+    const detail = (data && data.error && data.error.message) || '';
+    if (res.status === 401) throw new Error(`Claude rejected the API key (401${detail ? `: ${detail}` : ''}). Check it in the key settings.`);
+    if (res.status === 429) throw new Error('Rate limited. Wait a moment and try again.');
+    throw new Error(`Claude returned an error (${res.status}). ${detail}`.trim());
+  }
+  if (!data) throw new Error('Claude sent a reply OneBase couldn\'t read. Try again.');
   if (data.stop_reason === 'refusal') throw new Error('The model declined that request.');
   return (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
 }

@@ -456,11 +456,9 @@ async function ask(text, chat, currentSpec, scripted) {
     try {
       return await askModel({ chat, schema: schemaSummary(), currentSpec });
     } catch (e) {
-      if (e instanceof TypeError) {
-        const out = scripted();
-        return { ...out, reply: `Couldn't reach the model, so this is a scripted reply. ${out.reply}` };
-      }
-      return { reply: e.message };
+      // Show what actually went wrong. Scripted replies are only for when no key is set.
+      console.error('model call failed', e);
+      return { reply: e instanceof TypeError ? `Something went wrong talking to Claude: ${e.message}` : e.message, spec: null };
     }
   }
   await wait(650);

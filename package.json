@@ -1,0 +1,17 @@
+{
+  "name": "onebase-demo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Dev-only test tooling. The shipped app (index.html, js/, sw.js) has no build step and does not use anything here.",
+  "type": "module",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "node --test --import ./tests/setup.mjs \"tests/unit/*.test.mjs\"",
+    "test:e2e": "playwright test",
+    "test:live": "node --test --import ./tests/setup.mjs \"tests/live/*.test.mjs\""
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1",
+    "fake-indexeddb": "6.2.8"
+  }
+}

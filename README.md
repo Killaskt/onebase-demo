@@ -31,3 +31,22 @@ Then open http://localhost:8765.
 ## Reset the demo data
 
 Clear the site's data in the browser (or delete and reinstall the home-screen app). The seed data is recreated on next open, but only when the browser reports that nothing is stored; a failed read never resets anything.
+
+## Tests
+
+Dev only: the shipped app (`index.html`, `js/`, `sw.js`) doesn't load anything from `package.json`, `tests/` or `node_modules/`. Needs Node 20+ (CI uses 24).
+
+```bash
+npm ci
+npm run test:unit                 # node --test: spec validator, db.js (sql.js + fake-indexeddb), agent.js with fetch mocked, scripted fallback
+npx playwright install chromium   # once
+npm run test:e2e                  # Playwright Chromium: create → install → add a row → reload → row persists (own server on port 8787)
+```
+
+`npm test` runs both. CI (`.github/workflows/test.yml`) runs them on every push.
+
+**Live API smoke test (opt-in, costs a few cents at most):** makes exactly one real request through `askModel()`, capped at `max_tokens` 150 with low effort, and prints only the HTTP status and token usage. It is skipped unless `ANTHROPIC_API_KEY` is set, refuses to run when `CI` is set, and is never run in CI.
+
+```bash
+ANTHROPIC_API_KEY=... npm run test:live
+```

@@ -349,8 +349,17 @@ export function schemaSummary() {
   return userTables().map((t) => ({ table: t, columns: columns(t).map((c) => ({ name: c.name, kind: c.kind })) }));
 }
 
+const sqlType = { date: 'DATE', number: 'REAL', text: 'TEXT' };
+
 export function createTable(name, cols) {
-  const sqlType = { date: 'DATE', number: 'REAL', text: 'TEXT' };
   const defs = cols.map((c) => `${qi(c.key)} ${sqlType[c.kind] || 'TEXT'}`).join(', ');
   return run(`CREATE TABLE ${qi(name)} (id INTEGER PRIMARY KEY AUTOINCREMENT, ${defs})`);
+}
+
+// Add columns to an existing table. Existing rows keep their data; the new columns start empty.
+// Never drops or rewrites anything. The statements run before this returns; the promise is the save.
+export function addColumns(table, cols) {
+  let saved = Promise.resolve(true);
+  for (const c of cols) saved = run(`ALTER TABLE ${qi(table)} ADD COLUMN ${qi(c.key)} ${sqlType[c.kind] || 'TEXT'}`);
+  return saved;
 }

@@ -207,3 +207,31 @@ describe('identifiers and table matching', () => {
     assert.deepEqual(reconcile(spec, {}).missing, ['trips']);
   });
 });
+
+describe('addColumns', () => {
+  test('adds columns with the right kinds and keeps every row', async () => {
+    await boot();
+    await db.run('CREATE TABLE trips (id INTEGER PRIMARY KEY AUTOINCREMENT, date DATE, miles REAL)');
+    await db.run("INSERT INTO trips (date, miles) VALUES ('2026-11-01', 12.5), ('2026-11-02', 7)");
+    await db.addColumns('trips', [{ key: 'notes', kind: 'text' }, { key: 'sets', kind: 'number' }, { key: 'day', kind: 'date' }]);
+    assert.deepEqual(db.columns('trips').map((c) => [c.name, c.kind]), [['date', 'date'], ['miles', 'number'], ['notes', 'text'], ['sets', 'number'], ['day', 'date']]);
+    assert.deepEqual(db.query('SELECT date, miles, notes, sets FROM trips ORDER BY id'), [
+      { date: '2026-11-01', miles: 12.5, notes: null, sets: null },
+      { date: '2026-11-02', miles: 7, notes: null, sets: null },
+    ]);
+    assert.equal(await db.whenSaved(), true);
+    // and it survives a reopen
+    await db.openFromStore();
+    assert.equal(db.rowCount('trips'), 2);
+    assert.ok(db.columns('trips').some((c) => c.name === 'notes'));
+  });
+  test('refuses unsafe names and read-only mode, changing nothing', async () => {
+    await boot();
+    await db.run('CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, a TEXT)');
+    assert.throws(() => db.addColumns('t', [{ key: 'x"; DROP TABLE t; --', kind: 'text' }]), /Invalid identifier/);
+    db.setWritable(false);
+    assert.throws(() => db.addColumns('t', [{ key: 'b', kind: 'text' }]), /another tab/);
+    db.setWritable(true);
+    assert.deepEqual(db.columns('t').map((c) => c.name), ['a']);
+  });
+});

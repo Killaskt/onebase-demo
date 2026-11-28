@@ -1,7 +1,7 @@
 // Offline support. Everything the app needs is precached on install.
 // Requests go network-first so a new deploy shows up immediately when online,
 // and fall back to the cache when offline.
-const CACHE = 'onebase-v4';
+const CACHE = 'onebase-v6';
 const FILES = [
   './',
   'index.html',

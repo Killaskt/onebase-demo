@@ -4,7 +4,31 @@ import { columns, userTables, validIdent } from './db.js';
 
 export const KINDS = ['date', 'number', 'text'];
 export const AGGS = ['avg', 'max', 'min', 'sum', 'count'];
-export const BLOCK_TYPES = ['form', 'stats', 'chart', 'list', 'note'];
+export const BLOCK_TYPES = ['form', 'stats', 'chart', 'list', 'note', 'button'];
+export const BUTTON_STYLES = ['primary', 'secondary', 'link'];
+export const MAX_SCREENS = 8;
+export const MAX_BLOCKS_PER_SCREEN = 8;
+
+// ---- screens (shared contract: validator, renderer, app shell and agent all use these) ----
+// A spec has either top-level `blocks` (v1: one screen) or `screens` (v2), never both.
+// screens: [{ id, title, blocks }]; the first screen is home. 'back' is not a valid screen id.
+// A block is addressed by a ref string "<screenId>.<index>", e.g. "home.0".
+export function screensOf(spec) {
+  if (spec && Array.isArray(spec.screens)) return spec.screens;
+  return [{ id: 'home', title: (spec && spec.name) || '', blocks: (spec && spec.blocks) || [] }];
+}
+export const homeScreenId = (spec) => screensOf(spec)[0].id;
+export const screenById = (spec, id) => screensOf(spec).find((s) => s.id === id) || null;
+// Every block with its screen and ref, in order.
+export function allBlocks(spec) {
+  return screensOf(spec).flatMap((s) => (s.blocks || []).map((block, index) => ({ screen: s.id, index, ref: `${s.id}.${index}`, block })));
+}
+export function blockAt(spec, ref) {
+  const m = /^([A-Za-z_][A-Za-z0-9_]*)\.(\d+)$/.exec(String(ref));
+  if (!m) return null;
+  const s = screenById(spec, m[1]);
+  return (s && s.blocks && s.blocks[Number(m[2])]) || null;
+}
 
 // Returns a list of problems. Empty list means the spec is safe to render.
 export function validateSpec(spec) {
@@ -13,7 +37,13 @@ export function validateSpec(spec) {
   if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return ['Spec must be a JSON object.'];
   if (!isStr(spec.name)) errs.push('name is required.');
   if (!Array.isArray(spec.needs) || spec.needs.length === 0) errs.push('needs must list at least one table slot.');
-  if (!Array.isArray(spec.blocks) || spec.blocks.length === 0) errs.push('blocks must list at least one block.');
+  const hasBlocks = spec.blocks !== undefined && spec.blocks !== null;
+  const hasScreens = spec.screens !== undefined && spec.screens !== null;
+  if (hasBlocks && hasScreens) errs.push('Use either blocks or screens, not both.');
+  else if (hasScreens) {
+    if (!Array.isArray(spec.screens) || spec.screens.length === 0) errs.push('screens must list at least one screen.');
+    else if (spec.screens.length > MAX_SCREENS) errs.push(`At most ${MAX_SCREENS} screens are allowed.`);
+  } else if (!Array.isArray(spec.blocks) || spec.blocks.length === 0) errs.push('blocks must list at least one block.');
   if (errs.length) return errs;
 
   const slots = {};
@@ -23,19 +53,49 @@ export function validateSpec(spec) {
     if (!['read', 'write'].includes(n.access)) errs.push(`Slot "${n.slot}": access must be "read" or "write".`);
     if (!Array.isArray(n.columns) || n.columns.length === 0) { errs.push(`Slot "${n.slot}": columns are required.`); continue; }
     const cols = {};
+    const seenKeys = new Set();
     for (const c of n.columns) {
       if (!c || !validIdent(c.key)) { errs.push(`Slot "${n.slot}": each column needs a key.`); continue; }
       if (c.key.toLowerCase() === 'id') errs.push(`Slot "${n.slot}": "id" is reserved.`);
       if (!KINDS.includes(c.kind)) errs.push(`Slot "${n.slot}", column "${c.key}": kind must be date, number or text.`);
+      // SQLite column names are case-insensitive, so "miles" and "Miles" collide.
+      const lower = c.key.toLowerCase();
+      if (seenKeys.has(lower)) errs.push(`Slot "${n.slot}": duplicate column "${c.key}".`);
+      seenKeys.add(lower);
       cols[c.key] = c;
     }
     slots[n.slot] = { need: n, cols };
   }
 
-  spec.blocks.forEach((b, i) => {
-    const at = `Block ${i + 1}`;
+  const v2 = hasScreens;
+  // Screen ids, checked before blocks so button/form targets can be resolved.
+  const screenIds = new Set();
+  if (v2) {
+    for (const sc of spec.screens) {
+      if (!sc || typeof sc !== 'object') { errs.push('Each screen must be an object.'); continue; }
+      if (!validIdent(sc.id)) errs.push('Each screen needs an id (letters, digits, underscore).');
+      else if (sc.id === 'back') errs.push('Screen id "back" is reserved.');
+      else if (screenIds.has(sc.id)) errs.push(`Duplicate screen id "${sc.id}".`);
+      else screenIds.add(sc.id);
+    }
+  }
+  const targets = new Set();
+  const target = (at, what, to) => {
+    if (to === 'back') return;
+    if (!v2) { errs.push(`${at}: ${what} must be "back" in a single-screen interface.`); return; }
+    if (typeof to === 'string' && screenIds.has(to)) { targets.add(to); return; }
+    errs.push(`${at}: ${what} goes to unknown screen "${to}".`);
+  };
+
+  const checkBlock = (b, at) => {
     if (!b || !BLOCK_TYPES.includes(b.type)) { errs.push(`${at}: type must be one of ${BLOCK_TYPES.join(', ')}.`); return; }
     if (b.type === 'note') { if (!isStr(b.text)) errs.push(`${at}: note needs text.`); return; }
+    if (b.type === 'button') {
+      if (!isStr(b.label)) errs.push(`${at}: button needs a label.`);
+      target(at, 'button "to"', b.to);
+      if (b.style != null && !BUTTON_STYLES.includes(b.style)) errs.push(`${at}: button style must be one of ${BUTTON_STYLES.join(', ')}.`);
+      return;
+    }
     const s = slots[b.slot];
     if (!s) { errs.push(`${at}: unknown slot "${b.slot}".`); return; }
     const col = (key, kinds, what) => {
@@ -46,6 +106,7 @@ export function validateSpec(spec) {
     };
     if (b.type === 'form') {
       if (s.need.access !== 'write') errs.push(`${at}: a form needs write access on slot "${b.slot}".`);
+      if (b.then != null) target(at, 'form "then"', b.then);
       if (!Array.isArray(b.fields) || !b.fields.length) { errs.push(`${at}: form needs fields.`); return; }
       for (const f of b.fields) {
         if (!f) { errs.push(`${at}: empty field.`); continue; }
@@ -63,7 +124,10 @@ export function validateSpec(spec) {
     if (b.type === 'chart') {
       if (!['line', 'bar'].includes(b.kind)) errs.push(`${at}: chart kind must be line or bar.`);
       if (b.agg && !AGGS.includes(b.agg)) errs.push(`${at}: agg must be one of ${AGGS.join(', ')}.`);
-      if (b.agg !== 'count' || b.y) col(b.y, ['number'], 'y');
+      // The renderer plots y-less charts only as grouped counts; otherwise y is required.
+      const yOptional = !!b.groupBy && b.agg === 'count';
+      if (b.y) col(b.y, ['number'], 'y');
+      else if (!yOptional) errs.push(`${at}: chart needs a y number column.`);
       const xc = col(b.x, ['date', 'text'], 'x');
       if (b.groupBy && !['value', 'month'].includes(b.groupBy)) errs.push(`${at}: groupBy must be "value" or "month".`);
       if (b.groupBy === 'month' && xc && xc.kind !== 'date') errs.push(`${at}: groupBy month needs a date x column.`);
@@ -81,7 +145,23 @@ export function validateSpec(spec) {
       if (b.filter) col(b.filter.col, null, 'filter column');
       if (b.limit != null && !(Number.isInteger(b.limit) && b.limit > 0 && b.limit <= 200)) errs.push(`${at}: limit must be 1-200.`);
     }
-  });
+  };
+
+  if (v2) {
+    spec.screens.forEach((sc) => {
+      if (!sc || typeof sc !== 'object') return;
+      const label = sc.id ? `Screen "${sc.id}"` : 'Screen';
+      if (!isStr(sc.title)) errs.push(`${label}: title is required.`);
+      if (!Array.isArray(sc.blocks) || sc.blocks.length === 0) { errs.push(`${label}: blocks must list at least one block.`); return; }
+      if (sc.blocks.length > MAX_BLOCKS_PER_SCREEN) errs.push(`${label}: at most ${MAX_BLOCKS_PER_SCREEN} blocks per screen.`);
+      sc.blocks.forEach((b, i) => checkBlock(b, `${label}, block ${i + 1}`));
+    });
+    for (const id of screenIds) {
+      if (id !== spec.screens[0].id && !targets.has(id)) errs.push(`Screen "${id}" can't be reached: add a button or form "then" that goes to it.`);
+    }
+  } else {
+    spec.blocks.forEach((b, i) => checkBlock(b, `Block ${i + 1}`));
+  }
   return errs;
 }
 

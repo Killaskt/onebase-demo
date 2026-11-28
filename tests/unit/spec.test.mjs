@@ -1,7 +1,7 @@
 // validateSpec: the safety gate between a spec (catalog, agent or file) and the renderer.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateSpec, KINDS, AGGS, BLOCK_TYPES, accessLabel } from '../../js/spec.js';
+import { validateSpec, KINDS, AGGS, BLOCK_TYPES, BUTTON_STYLES, MAX_SCREENS, MAX_BLOCKS_PER_SCREEN, accessLabel, screensOf, homeScreenId, screenById, allBlocks, blockAt } from '../../js/spec.js';
 import { CATALOG } from '../../js/seed.js';
 import { SCRIPTED_NEW } from '../../js/agent.js';
 
@@ -38,7 +38,8 @@ describe('valid specs', () => {
   test('vocabulary constants', () => {
     assert.deepEqual(KINDS, ['date', 'number', 'text']);
     assert.deepEqual(AGGS, ['avg', 'max', 'min', 'sum', 'count']);
-    assert.deepEqual(BLOCK_TYPES, ['form', 'stats', 'chart', 'list', 'note']);
+    assert.deepEqual(BLOCK_TYPES, ['form', 'stats', 'chart', 'list', 'note', 'button']);
+    assert.deepEqual(BUTTON_STYLES, ['primary', 'secondary', 'link']);
     assert.equal(accessLabel('write'), 'Read & write');
     assert.equal(accessLabel('read'), 'Read only');
   });
@@ -99,12 +100,101 @@ describe('unknown and invalid blocks', () => {
   test('list filter column must exist', () => assert.ok(errsFor({ type: 'list', slot: 'trips', cols: { title: 'purpose' }, filter: { col: 'nope', value: 1 } }).some((e) => /filter column/.test(e))));
 });
 
-describe('known gaps from the codebase audit (not fixed; tracked as todo)', () => {
-  test('ungrouped count chart with no y should be rejected (the renderer needs y)', { todo: 'audit P1 #5: validator accepts it' }, () => {
-    assert.notDeepEqual(errsFor({ type: 'chart', slot: 'trips', kind: 'line', x: 'date', agg: 'count' }), []);
+describe('gaps from the codebase audit (fixed)', () => {
+  test('ungrouped count chart with no y is rejected (the renderer needs y)', () => {
+    const e = errsFor({ type: 'chart', slot: 'trips', kind: 'line', x: 'date', agg: 'count' });
+    assert.deepEqual(e, ['Block 1: chart needs a y number column.']);
   });
-  test('duplicate column keys should be rejected', { todo: 'audit P1 #6: validator accepts them' }, () => {
-    const s = base(); s.needs[0].columns.push({ key: 'Date', kind: 'date' });
-    assert.notDeepEqual(validateSpec(s), []);
+  test('grouped count chart with no y is still valid', () => {
+    assert.deepEqual(errsFor({ type: 'chart', slot: 'trips', kind: 'bar', x: 'purpose', groupBy: 'value', agg: 'count' }), []);
+  });
+  test('duplicate column keys are rejected', () => {
+    const s = base(); s.needs[0].columns.push({ key: 'miles', kind: 'number' });
+    assert.deepEqual(validateSpec(s), ['Slot "trips": duplicate column "miles".']);
+  });
+  test('column keys differing only by case are rejected', () => {
+    const s = base(); s.needs[0].columns.push({ key: 'Miles', kind: 'number' });
+    assert.deepEqual(validateSpec(s), ['Slot "trips": duplicate column "Miles".']);
+  });
+});
+
+describe('screens (v2)', () => {
+  const v2 = () => ({
+    name: 'Trips',
+    needs: base().needs,
+    screens: [
+      { id: 'home', title: 'Trips', blocks: [
+        { type: 'stats', slot: 'trips', items: [{ agg: 'sum', col: 'miles' }] },
+        { type: 'button', label: 'Log a trip', to: 'log', style: 'primary' },
+        { type: 'button', label: 'History', to: 'history', style: 'link' }] },
+      { id: 'log', title: 'Log a trip', blocks: [{ type: 'form', slot: 'trips', fields: [{ col: 'miles' }], then: 'back' }] },
+      { id: 'history', title: 'History', blocks: [{ type: 'list', slot: 'trips', cols: { title: 'purpose', value: 'miles' } }] },
+    ],
+  });
+  const has = (spec, re) => { const e = validateSpec(spec); assert.ok(e.some((x) => re.test(x)), `expected ${re} in ${JSON.stringify(e)}`); };
+
+  test('a valid 3-screen spec passes', () => assert.deepEqual(validateSpec(v2()), []));
+  test('both blocks and screens is an error', () => { const s = v2(); s.blocks = [{ type: 'note', text: 'x' }]; has(s, /either blocks or screens/); });
+  test('neither blocks nor screens is an error', () => { const s = v2(); delete s.screens; has(s, /blocks must list/); });
+  test('duplicate screen id', () => { const s = v2(); s.screens[2].id = 'log'; has(s, /Duplicate screen id "log"/); });
+  test('screen id "back" is reserved', () => { const s = v2(); s.screens[1].id = 'back'; has(s, /"back" is reserved/); });
+  test('invalid screen id', () => { const s = v2(); s.screens[1].id = 'a b'; has(s, /needs an id/); });
+  test('unreachable screen', () => {
+    const s = v2(); s.screens[0].blocks.pop();
+    assert.ok(validateSpec(s).includes('Screen "history" can\'t be reached: add a button or form "then" that goes to it.'));
+  });
+  test('button to an unknown screen', () => { const s = v2(); s.screens[0].blocks[1].to = 'nope'; has(s, /unknown screen "nope"/); });
+  test('form then to an unknown screen', () => { const s = v2(); s.screens[1].blocks[0].then = 'nope'; has(s, /unknown screen "nope"/); });
+  test('form then to a screen id makes it reachable', () => {
+    const s = v2(); s.screens[0].blocks.pop(); s.screens[1].blocks[0].then = 'history';
+    assert.deepEqual(validateSpec(s), []);
+  });
+  test('too many screens', () => {
+    const s = v2(); s.screens = Array.from({ length: MAX_SCREENS + 1 }, (_, i) => ({ id: `s${i}`, title: 'T', blocks: [{ type: 'note', text: 'x' }] }));
+    has(s, /At most 8 screens/);
+  });
+  test('empty screen, missing title, too many blocks', () => {
+    let s = v2(); s.screens[2].blocks = []; has(s, /Screen "history": blocks must list/);
+    s = v2(); s.screens[2].title = ' '; has(s, /Screen "history": title is required/);
+    s = v2(); s.screens[2].blocks = Array.from({ length: MAX_BLOCKS_PER_SCREEN + 1 }, () => ({ type: 'note', text: 'x' })); has(s, /at most 8 blocks/);
+  });
+  test('per-block errors name the screen', () => {
+    const s = v2(); s.screens[1].blocks[0].fields = [{ col: 'nope' }];
+    has(s, /^Screen "log", block 1: field "nope"/);
+  });
+  test('button needs a label and a valid style', () => {
+    const s = v2(); s.screens[0].blocks[1].label = ''; s.screens[0].blocks[1].style = 'huge';
+    has(s, /button needs a label/); has(s, /button style must be/);
+  });
+  test('v1 button with to:"back" is valid; other targets are rejected', () => {
+    const s = base(); s.blocks = [{ type: 'button', label: 'Back', to: 'back' }];
+    assert.deepEqual(validateSpec(s), []);
+    s.blocks[0].to = 'log'; has(s, /^Block 1: button "to" must be "back"/);
+  });
+  test('v1 form then other than back is rejected', () => {
+    const s = base(); s.blocks = [{ type: 'form', slot: 'trips', fields: [{ col: 'miles' }], then: 'back' }];
+    assert.deepEqual(validateSpec(s), []);
+    s.blocks[0].then = 'x'; has(s, /form "then"/);
+  });
+});
+
+describe('screen helpers', () => {
+  const spec = { name: 'x', screens: [
+    { id: 'home', title: 'H', blocks: [{ type: 'note', text: 'a' }, { type: 'note', text: 'b' }] },
+    { id: 'log', title: 'L', blocks: [{ type: 'note', text: 'c' }] }] };
+  test('screensOf / homeScreenId / screenById', () => {
+    assert.equal(homeScreenId(spec), 'home');
+    assert.equal(screenById(spec, 'log').title, 'L');
+    assert.equal(screenById(spec, 'nope'), null);
+    const v1 = { name: 'N', blocks: [{ type: 'note', text: 'a' }] };
+    assert.deepEqual(screensOf(v1), [{ id: 'home', title: 'N', blocks: v1.blocks }]);
+  });
+  test('allBlocks lists every block with its ref', () => {
+    assert.deepEqual(allBlocks(spec).map((x) => [x.screen, x.index, x.ref, x.block.text]), [['home', 0, 'home.0', 'a'], ['home', 1, 'home.1', 'b'], ['log', 0, 'log.0', 'c']]);
+  });
+  test('blockAt resolves refs and returns null for bad ones', () => {
+    assert.equal(blockAt(spec, 'log.0').text, 'c');
+    assert.equal(blockAt({ name: 'x', blocks: spec.screens[0].blocks }, 'home.1').text, 'b');
+    for (const bad of ['log.1', 'nope.0', 'log', '0', 'log.x', 'log.-1', '', null, undefined, 'log.0.0']) assert.equal(blockAt(spec, bad), null, String(bad));
   });
 });

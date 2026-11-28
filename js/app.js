@@ -1,12 +1,12 @@
 import {
   openFromStore, loadSql, claimWriter, setWritable, isWritable, onSaveState, getSaveState, retrySave, whenSaved,
-  query, batch, run, userTables, columns, rowCount, schemaSummary, createTable, exportBytes, validIdent, qi,
+  query, batch, run, userTables, columns, rowCount, schemaSummary, createTable, addColumns, exportBytes, validIdent, qi,
   NotOwnerError, ExistsError, inspectSqlite, replaceWith,
 } from './db.js';
 import { createWriterLock } from './lock.js';
 import { seed, isSeeded, ensureMeta, META_SQL, CATALOG } from './seed.js';
-import { validateSpec, candidates, matchTable, reconcile, accessLabel } from './spec.js';
-import { renderBlocks, submitForm, describeRule, esc, fmtDate } from './render.js';
+import { validateSpec, candidates, matchTable, reconcile, accessLabel, homeScreenId, screenById, blockAt } from './spec.js';
+import { renderScreen, submitForm, describeRule, esc, fmtDate } from './render.js';
 import { getKey, setKey, askModel, scriptedNew, scriptedEdit, scriptedSuggestions, SCRIPTED_NEW } from './agent.js';
 
 const $app = document.getElementById('app');
@@ -74,6 +74,7 @@ const ICON = {
   more: svg('<circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/>'),
   plus: svg('<path d="M12 5v14M5 12h14"/>'),
   chev: svg('<path d="M9 5l7 7-7 7"/>', 'class="chev"'),
+  close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
   lock: svg('<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>', 'class="sm"'),
 };
 
@@ -284,20 +285,58 @@ function newScreen() {
   ${composer(v.draft || getKey() ? [] : SCRIPTED_NEW.map((s) => s.prompt), 'Describe an interface…', v.busy)}`;
 }
 
+// The open interface's screen stack, reset to home when its top screen no longer exists
+// (after an agent edit, undo or restore).
+function screenStack(iface) {
+  const v = state.view;
+  if (!Array.isArray(v.stack) || !v.stack.length || !v.stack.every((id) => screenById(iface.spec, id))) v.stack = [homeScreenId(iface.spec)];
+  return v.stack;
+}
+
 function ifaceScreen() {
   const v = state.view;
   const iface = getIface(v.id);
   if (!iface) { state.view = null; return homeScreen() + tabbar(); }
+  const stack = screenStack(iface);
+  const top = stack[stack.length - 1];
+  const screen = screenById(iface.spec, top);
+  const head = stack.length > 1
+    ? `<div class="screen-head"><button class="nav-back" data-act="go" data-to="back" aria-label="Back">${ICON.back}</button><span class="screen-title">${esc(screen.title)}</span></div>`
+    : `<div class="iface-head">${appIcon(iface.spec)}<h1 class="large-title">${esc(screen.title)}</h1></div>`;
+  return `${saveBanner()}<main class="scroll iface-scroll">${head}${renderScreen(iface, top, { ruleOpen: v.ruleOpen })}</main>${edgeTab()}`;
+}
+
+// The only OneBase control inside an interface. Pulses once, the first time it is ever shown.
+const EDGE_KEY = 'onebase.edgeTabSeen';
+function edgeTab() {
+  let pulse = false;
+  try {
+    if (localStorage.getItem(EDGE_KEY) !== '1') { pulse = true; localStorage.setItem(EDGE_KEY, '1'); }
+  } catch { /* storage unavailable: no pulse */ }
+  return `<button class="edge-tab ${pulse ? 'pulse' : ''}" data-act="drawer" aria-label="OneBase menu"><span class="edge-grip"></span></button>`;
+}
+
+function drawerSheet(s) {
+  const i = getIface(s.id);
+  const bound = Object.values(i.bindings).map((b) => `<b>${esc(b.table)}</b> (${esc(accessLabel(b.access).toLowerCase())})`).join(', ');
+  return `<div class="drawer-head">${appIcon(i.spec, 'lg')}<h2>${esc(i.spec.name)}</h2><p>${esc(i.spec.description || '')}</p></div>
+    <div class="drawer-rows">
+      <button class="drawer-row" data-act="agent-open">Edit with agent${ICON.chev}</button>
+      <button class="drawer-row" data-act="back">Home${ICON.chev}</button>
+      <button class="drawer-row" data-act="menu-bind">Data & bindings${ICON.chev}</button>
+      <button class="drawer-row" data-act="menu-history">Version history${ICON.chev}</button>
+      <button class="drawer-row" data-act="key">Claude API key${ICON.chev}</button>
+      <button class="drawer-row danger" data-act="menu-uninstall">Uninstall</button>
+    </div>
+    <p class="drawer-note">${bound ? `Bound to ${bound}. ` : ''}Deleting this interface keeps the data.</p>`;
+}
+
+function agentSheet(s) {
+  const v = state.view;
+  const iface = getIface(s.id);
   const vs = versions(iface.id);
-  const nav = `<div class="navbar"><button class="nav-back" data-act="back">${ICON.back}Home</button><span class="nav-title">${esc(iface.spec.name)}</span>
-    <button class="icon-btn" data-act="menu" data-id="${iface.id}" aria-label="Interface menu">${ICON.more}</button></div>
-    <div class="flip" role="tablist"><button class="${v.side === 'use' ? 'on' : ''}" data-act="flip" data-side="use">Interface</button><button class="${v.side === 'agent' ? 'on' : ''}" data-act="flip" data-side="agent">Agent session</button></div>`;
-  if (v.side === 'use') {
-    const foot = Object.values(iface.bindings).map((b) => `<b>${esc(b.table)}</b> (${accessLabel(b.access).toLowerCase()})`).join(', ');
-    return `${nav}<main class="scroll">${renderBlocks(iface, { ruleOpen: v.ruleOpen })}<p class="foot-note">Bound to ${foot}. Deleting this interface keeps the data.</p></main>`;
-  }
   const last = vs[vs.length - 1];
-  return `${nav}
+  return `<div class="agent-top"><div class="grabber"></div><button class="icon-btn agent-close" data-act="close-sheet" aria-label="Close">${ICON.close}</button></div>
   <div class="version-bar"><span class="v-text"><b>Version ${vs.length}</b> · ${esc(last ? last.note : '')}</span>
     <button class="link" data-act="undo" ${vs.length < 2 ? 'disabled' : ''}>Undo</button><button class="link" data-act="history">History</button></div>
   <main class="scroll chat">${privacyNote()}${bubbles(iface.chat)}${v.busy ? typing : ''}</main>
@@ -306,19 +345,37 @@ function ifaceScreen() {
 
 // ---------- sheets ----------
 
+// A table that is only missing some needed columns can be extended instead of replaced.
+// Returns the columns to add, or null when the table fits already or can't be fixed by adding.
+function extendWith(need, table) {
+  if (matchTable(need, table).ok) return null;
+  const cols = columns(table);
+  const missing = [];
+  for (const c of need.columns) {
+    const hit = cols.find((t) => t.name.toLowerCase() === c.key.toLowerCase());
+    if (!hit) { if (c.key.toLowerCase() === 'id') return null; missing.push(c); } else if (hit.kind !== c.kind) return null;
+  }
+  return missing.length ? missing : null;
+}
+
 function bindSheet(s) {
   const tables = userTables();
   const needs = s.spec.needs.map((need) => {
     const c = candidates(need);
     const choice = s.choice[need.slot];
-    const opts = [...c.all].sort((a, b) => (b.table === c.suggested) - (a.table === c.suggested) || b.ok - a.ok).map((m) => `<option value="${esc(m.table)}" ${choice.table === m.table ? 'selected' : ''} ${m.ok ? '' : 'disabled'}>${esc(m.table)}${m.table === c.suggested ? ' (suggested)' : m.ok ? '' : ' (columns don\'t fit)'}</option>`).join('');
+    const ext = {};
+    for (const m of c.all) if (!m.ok) { const x = extendWith(need, m.table); if (x) ext[m.table] = x; }
+    const opts = [...c.all].sort((a, b) => (b.table === c.suggested) - (a.table === c.suggested) || (b.ok || !!ext[b.table]) - (a.ok || !!ext[a.table])).map((m) => `<option value="${esc(m.table)}" ${choice.table === m.table ? 'selected' : ''} ${m.ok || ext[m.table] ? '' : 'disabled'}>${esc(m.table)}${m.table === c.suggested ? ' (suggested)' : ext[m.table] ? ` (adds ${ext[m.table].map((x) => esc(x.key)).join(', ')})` : m.ok ? '' : ' (columns don\'t fit)'}</option>`).join('');
     let detail;
     if (choice.table === '__new__') {
       detail = `<label class="row field"><span class="field-label">Name</span><input type="text" data-input="bind-name" data-slot="${esc(need.slot)}" value="${esc(choice.newName)}" autocapitalize="off" autocomplete="off"></label>
         <p class="map">A new empty table with ${need.columns.map((x) => esc(x.key)).join(', ')}.</p>`;
     } else {
+      const add = extendWith(need, choice.table);
       const m = matchTable(need, choice.table);
-      detail = `<p class="map">${need.columns.map((x) => `${esc(x.key)} → ${esc(m.columns[x.key] || '?')}`).join(' · ')}</p>`;
+      const rest = need.columns.filter((x) => !add || !add.includes(x));
+      detail = `${add ? `<p class="map">Adds column ${add.map((x) => `${esc(x.key)} (${esc(x.kind)})`).join(', ')} to ${esc(choice.table)}. Existing rows keep their data; the new column starts empty.</p>` : ''}
+        ${rest.length ? `<p class="map">${rest.map((x) => `${esc(x.key)} → ${esc(m.columns[x.key] || '?')}`).join(' · ')}</p>` : ''}`;
     }
     return `<div class="card need">
       <div class="need-head"><b>${esc(need.label || need.slot)}</b><span class="badge ${need.access}">${accessLabel(need.access)}</span></div>
@@ -345,7 +402,13 @@ function openBind(spec, opts) {
     const taken = userTables();
     let newName = need.slot;
     for (let n = 2; taken.includes(newName); n++) newName = `${need.slot}_${n}`;
-    choice[need.slot] = { table: cur && taken.includes(cur.table) && matchTable(need, cur.table).ok ? cur.table : c.suggested || '__new__', newName };
+    const fits = (t) => taken.includes(t) && (matchTable(need, t).ok || !!extendWith(need, t));
+    let pick = cur && fits(cur.table) ? cur.table : null;
+    // A renamed slot has no binding of its own: try the tables of bindings the new spec no longer uses.
+    if (!pick && !cur && opts.bindings) {
+      pick = Object.keys(opts.bindings).filter((k) => !spec.needs.some((n) => n.slot === k)).map((k) => opts.bindings[k].table).find(fits) || null;
+    }
+    choice[need.slot] = { table: pick || c.suggested || '__new__', newName };
   }
   state.sheet = { kind: 'bind', spec, choice, fresh: true, ...opts };
   render();
@@ -410,6 +473,16 @@ function currentSummary() {
 function sheetHtml() {
   const s = state.sheet;
   if (!s) return '';
+  if (s.kind === 'drawer') {
+    const fresh = s.fresh ? 'enter' : '';
+    s.fresh = false;
+    return `<div class="scrim ${fresh}" data-act="scrim"></div><aside class="drawer ${fresh}" role="dialog" aria-label="OneBase menu">${drawerSheet(s)}</aside>`;
+  }
+  if (s.kind === 'agent') {
+    const fresh = s.fresh ? 'enter' : '';
+    s.fresh = false;
+    return `<div class="scrim light ${fresh}" data-act="scrim"></div><div class="sheet tall ${fresh}" role="dialog" aria-label="Edit with agent">${agentSheet(s)}</div>`;
+  }
   const body = s.kind === 'bind' ? bindSheet(s) : s.kind === 'menu' ? menuSheet(s) : s.kind === 'uninstall' ? uninstallSheet(s)
     : s.kind === 'history' ? historySheet(s) : s.kind === 'key' ? keySheet() : s.kind === 'restore' ? restoreSheet(s) : '';
   const fresh = s.fresh ? 'enter' : '';
@@ -427,17 +500,21 @@ function render() {
     return;
   }
   const v = state.view;
-  const key = v ? `${v.type}:${v.id || ''}:${v.side || ''}` : `tab:${state.tab}`;
-  const old = $app.querySelector('.scroll');
+  const key = v ? `${v.type}:${v.id || ''}:${v.stack ? v.stack[v.stack.length - 1] : ''}` : `tab:${state.tab}`;
+  const old = $app.querySelector('.scroll:not(.chat)');
   const keep = old && key === lastKey ? old.scrollTop : 0;
   let body;
   if (v && v.type === 'iface') body = ifaceScreen();
   else if (v && v.type === 'new') body = newScreen();
   else body = (state.tab === 'home' ? homeScreen() : state.tab === 'market' ? marketScreen() : dataScreen()) + tabbar();
-  $app.innerHTML = topbar() + body + sheetHtml() + (state.toast ? `<div class="toast">${esc(state.toast)}</div>` : '');
-  const sc = $app.querySelector('.scroll');
-  if (sc) sc.scrollTop = sc.classList.contains('chat') ? sc.scrollHeight : keep;
+  const immersive = !!(state.view && state.view.type === 'iface');
+  $app.innerHTML = (immersive ? '' : topbar()) + body + sheetHtml() + (state.toast ? `<div class="toast">${esc(state.toast)}</div>` : '');
+  const sc = $app.querySelector('.scroll:not(.chat)');
+  if (sc) sc.scrollTop = keep;
+  const chat = $app.querySelector('.scroll.chat');
+  if (chat) chat.scrollTop = chat.scrollHeight;
   lastKey = key;
+  syncUi();
 }
 
 let toastTimer;
@@ -530,10 +607,10 @@ function doUndo(id) {
   if (r.missing.length) openBind(iface.spec, { mode: 'edit', ifaceId: id, bindings: iface.bindings });
 }
 
-function changeRule(blockIndex, mutate) {
+function changeRule(ref, mutate) {
   const iface = getIface(state.view.id);
   const spec = clone(iface.spec);
-  const b = spec.blocks[blockIndex];
+  const b = blockAt(spec, ref);
   if (!b || b.type !== 'list') return;
   mutate(b);
   saveSpec(iface.id, spec, `Rule: ${describeRule(b, { ...iface, spec })}`);
@@ -544,9 +621,18 @@ function changeRule(blockIndex, mutate) {
 
 const actions = {
   tab(el) { state.tab = el.dataset.tab; state.view = null; render(); },
-  open(el) { state.view = { type: 'iface', id: el.dataset.id, side: 'use' }; render(); },
-  back() { state.view = null; state.tab = 'home'; render(); },
-  flip(el) { state.view.side = el.dataset.side; state.view.ruleOpen = null; render(); },
+  open(el) {
+    const saved = ui.stacks[el.dataset.id];
+    state.view = { type: 'iface', id: el.dataset.id, stack: Array.isArray(saved) ? [...saved] : undefined };
+    render();
+  },
+  back() { state.view = null; state.sheet = null; state.tab = 'home'; render(); },
+  drawer() {
+    if (!state.view || state.view.type !== 'iface' || state.sheet) return;
+    state.sheet = { kind: 'drawer', id: state.view.id, fresh: true };
+    render();
+  },
+  'agent-open'() { state.sheet = { kind: 'agent', id: state.view.id, fresh: true }; render(); },
   new() { state.view = { type: 'new', chat: [], draft: null, busy: false }; render(); },
   chip(el) { if (state.view.busy) return; state.view.type === 'new' ? sendNew(el.dataset.text) : sendIface(el.dataset.text); },
   key() { state.sheet = { kind: 'key', fresh: true }; render(); },
@@ -576,6 +662,7 @@ const actions = {
     state.sheet = null;
     state.view = null;
     state.tab = 'home';
+    delete ui.stacks[i.id];
     toast(`${i.spec.name} removed. ${tables.map((t) => `${t}: ${rowsText(rowCount(t))} kept`).join(', ')}`);
     render();
   },
@@ -610,6 +697,7 @@ const actions = {
     const s = state.sheet;
     const bindings = {};
     const toCreate = [];
+    const toExtend = [];
     const existing = userTables();
     for (const need of s.spec.needs) {
       const c = s.choice[need.slot];
@@ -622,6 +710,8 @@ const actions = {
         for (const col of need.columns) cols[col.key] = col.key;
         bindings[need.slot] = { table: name, columns: cols, access: need.access };
       } else {
+        const add = extendWith(need, c.table);
+        if (add) { toExtend.push({ need, table: c.table, cols: add }); continue; }
         const m = matchTable(need, c.table);
         if (!m.ok) { s.error = `"${c.table}" doesn't have the columns this needs.`; render(); return; }
         const prev = s.bindings && s.bindings[need.slot];
@@ -629,11 +719,20 @@ const actions = {
       }
     }
     for (const t of toCreate) createTable(t.name, t.need.columns);
+    // Validation passed: add the missing columns (the statements run now), then bind as usual.
+    for (const a of toExtend) {
+      // Re-check right before altering: an earlier need may already have added the same column.
+      const still = extendWith(a.need, a.table);
+      if (still) addColumns(a.table, still);
+      const m = matchTable(a.need, a.table);
+      const prev = s.bindings && s.bindings[a.need.slot];
+      bindings[a.need.slot] = { table: a.table, columns: prev && prev.table === a.table ? { ...m.columns, ...prev.columns } : m.columns, access: a.need.access };
+    }
     state.sheet = null;
     if (s.mode === 'install') {
       const id = installInterface(s.spec, bindings, s.chat, s.source);
       state.tab = 'home';
-      state.view = { type: 'iface', id, side: 'use' };
+      state.view = { type: 'iface', id };
       toast(`${s.spec.name} installed`);
     } else {
       if (s.mode === 'respec') {
@@ -647,8 +746,16 @@ const actions = {
     render();
   },
   'edit-rule'(el) {
-    const i = Number(el.dataset.block);
-    state.view.ruleOpen = state.view.ruleOpen === i ? null : i;
+    const ref = el.dataset.block;
+    state.view.ruleOpen = state.view.ruleOpen === ref ? null : ref;
+    render();
+  },
+  go(el) {
+    const v = state.view;
+    if (!v || v.type !== 'iface') return;
+    const stack = screenStack(getIface(v.id));
+    if (el.dataset.to === 'back') { if (stack.length > 1) stack.pop(); } else stack.push(el.dataset.to);
+    v.ruleOpen = null;
     render();
   },
   'retry-save'() { retrySave().then((ok) => { toast(ok ? 'Saved' : 'Still not saved'); render(); }); },
@@ -745,7 +852,9 @@ $app.addEventListener('submit', (e) => {
     return;
   }
   try {
-    const table = submitForm(getIface(state.view.id), Number(kind), new FormData(form));
+    const iface = getIface(state.view.id);
+    const { table, then } = submitForm(iface, kind, new FormData(form));
+    if (then) actions.go({ dataset: { to: then } });
     toast(`Saving to ${table}…`);
     whenSaved().then((ok) => {
       if (ok) { toast(`Saved to ${table}`); requestPersistence(); } else { state.toast = null; }
@@ -762,9 +871,9 @@ $app.addEventListener('change', (e) => {
   const c = el.dataset.change;
   if (c === 'restore-file') { pickRestoreFile(el); return; }
   if (c === 'bind-table') { state.sheet.choice[el.dataset.slot].table = el.value; state.sheet.error = null; render(); }
-  if (c === 'rule-sort') { const [col, dir] = el.value.split(':'); changeRule(Number(el.dataset.block), (b) => { b.sort = { col, dir }; }); }
-  if (c === 'rule-filter') changeRule(Number(el.dataset.block), (b) => { b.filter = el.value === '' ? null : { col: el.dataset.col, value: el.value }; });
-  if (c === 'rule-limit') changeRule(Number(el.dataset.block), (b) => { b.limit = Number(el.value); });
+  if (c === 'rule-sort') { const [col, dir] = el.value.split(':'); changeRule(el.dataset.block, (b) => { b.sort = { col, dir }; }); }
+  if (c === 'rule-filter') changeRule(el.dataset.block, (b) => { b.filter = el.value === '' ? null : { col: el.dataset.col, value: el.value }; });
+  if (c === 'rule-limit') changeRule(el.dataset.block, (b) => { b.limit = Number(el.value); });
 });
 
 $app.addEventListener('input', (e) => {
@@ -794,6 +903,52 @@ $app.addEventListener('contextmenu', (e) => {
   cancelPress();
   actions.menu(tile);
 });
+
+// ---------- resume (per-viewer UI state, never data) ----------
+
+const UI_KEY = 'onebase.ui';
+function loadUi() {
+  try {
+    const o = JSON.parse(localStorage.getItem(UI_KEY));
+    if (o && typeof o === 'object') {
+      const stacks = {};
+      if (o.stacks && typeof o.stacks === 'object') {
+        for (const [k, st] of Object.entries(o.stacks)) if (Array.isArray(st) && st.every((x) => typeof x === 'string')) stacks[k] = st;
+      }
+      return { open: typeof o.open === 'string' ? o.open : null, stacks };
+    }
+  } catch { /* no storage or bad JSON */ }
+  return { open: null, stacks: {} };
+}
+const ui = loadUi();
+let uiSaved = JSON.stringify(ui);
+function syncUi() {
+  const v = state.view;
+  ui.open = v && v.type === 'iface' ? v.id : null;
+  if (ui.open && Array.isArray(v.stack)) ui.stacks[v.id] = [...v.stack];
+  const json = JSON.stringify(ui);
+  if (json === uiSaved) return;
+  uiSaved = json;
+  try { localStorage.setItem(UI_KEY, json); } catch { /* storage unavailable */ }
+}
+
+// Left swipe that starts within 24px of the right edge opens the drawer; swipe right closes it.
+let touch = null;
+$app.addEventListener('touchstart', (e) => {
+  const t = e.touches[0];
+  touch = e.touches.length === 1 ? { x: t.clientX, y: t.clientY, edge: t.clientX >= $app.getBoundingClientRect().right - 24 } : null;
+}, { passive: true });
+$app.addEventListener('touchend', (e) => {
+  const st = touch;
+  touch = null;
+  if (!st || state.block) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - st.x;
+  const dy = t.clientY - st.y;
+  if (Math.abs(dx) < 50 || Math.abs(dy) > Math.abs(dx)) return;
+  if (state.sheet && state.sheet.kind === 'drawer' && dx > 0) actions['close-sheet']();
+  else if (!state.sheet && st.edge && dx < 0 && state.view && state.view.type === 'iface') actions.drawer();
+}, { passive: true });
 
 // ---------- storage persistence ----------
 
@@ -845,6 +1000,8 @@ async function becomeWriter() {
     state.block = null;
     state.view = null;
     state.sheet = null;
+    // Resume the interface that was open, on its saved screen (if it still exists).
+    if (ui.open && getIface(ui.open)) state.view = { type: 'iface', id: ui.open, stack: ui.stacks[ui.open] ? [...ui.stacks[ui.open]] : undefined };
     await refreshStorage();
     render();
     if (isStandalone()) requestPersistence();

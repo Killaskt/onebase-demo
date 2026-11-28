@@ -98,6 +98,53 @@ const expenseLog = {
   ],
 };
 
+// Multi-screen worked example (also the one in the agent prompt): home, quick log, history, progress.
+export const trainingLog = {
+  name: 'Training Log',
+  icon: '🏋️',
+  color: '#2b8a3e',
+  description: 'Log sets and track your progress.',
+  needs: [{
+    slot: 'workouts', label: 'Workouts', access: 'write',
+    columns: [
+      { key: 'date', kind: 'date', label: 'Date' },
+      { key: 'exercise', kind: 'text', label: 'Exercise' },
+      { key: 'sets', kind: 'number', label: 'Sets' },
+      { key: 'reps', kind: 'number', label: 'Reps' },
+      { key: 'weight', kind: 'number', label: 'Weight' },
+    ],
+  }],
+  screens: [
+    { id: 'home', title: 'Training', blocks: [
+      { type: 'stats', slot: 'workouts', items: [
+        { label: 'Sets logged', agg: 'count' },
+        { label: 'Total sets', agg: 'sum', col: 'sets' },
+        { label: 'Best weight', agg: 'max', col: 'weight' },
+      ] },
+      { type: 'button', label: 'Log a set', to: 'log', style: 'primary' },
+      { type: 'button', label: 'History', to: 'history', style: 'link' },
+      { type: 'button', label: 'Progress', to: 'progress', style: 'link' },
+      { type: 'list', slot: 'workouts', title: 'Recent', cols: { title: 'exercise', subtitle: 'date', value: 'weight' }, sort: { col: 'date', dir: 'desc' }, filter: null, limit: 3 },
+    ] },
+    { id: 'log', title: 'Log a set', blocks: [
+      { type: 'form', slot: 'workouts', title: 'New set', submit: 'Save set', then: 'back', fields: [
+        { col: 'date', label: 'Date' },
+        { col: 'exercise', label: 'Exercise', placeholder: 'Squat', suggest: true },
+        { col: 'sets', label: 'Sets', min: 0 },
+        { col: 'reps', label: 'Reps', min: 0 },
+        { col: 'weight', label: 'Weight', min: 0, step: 0.5 },
+      ] },
+    ] },
+    { id: 'history', title: 'History', blocks: [
+      { type: 'list', slot: 'workouts', title: 'All sets', rule: true, cols: { title: 'exercise', subtitle: 'date', value: 'weight' }, sort: { col: 'date', dir: 'desc' }, filter: null, limit: 50 },
+    ] },
+    { id: 'progress', title: 'Progress', blocks: [
+      { type: 'chart', slot: 'workouts', title: 'Weight over time', kind: 'line', x: 'date', y: 'weight' },
+      { type: 'chart', slot: 'workouts', title: 'Sets by exercise', kind: 'bar', x: 'exercise', y: 'sets', groupBy: 'value', agg: 'sum' },
+    ] },
+  ],
+};
+
 // Marketplace listing. `spec` present means it really installs; otherwise it is a placeholder.
 export const CATALOG = [
   {
@@ -119,6 +166,13 @@ export const CATALOG = [
     chat: [
       { role: 'user', text: 'A simple expense log. Date, amount, category.' },
       { role: 'agent', text: 'Built Expense Log. It adds rows to your expenses table and shows the total and your recent entries. It lives in the same database as your bowling games but only touches the expenses table.' },
+    ],
+  },
+  {
+    key: 'training', spec: trainingLog, preinstall: false, // marketplace only: a fresh install keeps just the first three
+    chat: [
+      { role: 'user', text: 'Build me a workout tracker: log sets with exercise, reps and weight, and show my progress.' },
+      { role: 'agent', text: 'Built Training Log. It has a home with your totals and recent sets, a quick screen to log a set, a full history, and a progress page with charts. It needs write access to one table with a date, a few numbers and an exercise name.' },
     ],
   },
   { key: 'mileage', placeholder: { name: 'Mileage Tracker', icon: '🚗', color: '#6741d9', description: 'Trips, distance and purpose for tax time.' } },
@@ -146,7 +200,7 @@ export function seed(installInterface) {
     for (const [d, a, c] of EXPENSES) exec('INSERT INTO expenses (date, amount, category) VALUES (?, ?, ?)', [daysAgo(d), a, c]);
     META.forEach((sql) => exec(sql));
   });
-  for (const item of CATALOG.filter((c) => c.spec)) {
+  for (const item of CATALOG.filter((c) => c.spec && c.preinstall !== false)) {
     const slot = item.spec.needs[0];
     const cols = {};
     for (const c of slot.columns) cols[c.key] = c.key;

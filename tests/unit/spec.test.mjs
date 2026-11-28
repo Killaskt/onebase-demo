@@ -99,12 +99,20 @@ describe('unknown and invalid blocks', () => {
   test('list filter column must exist', () => assert.ok(errsFor({ type: 'list', slot: 'trips', cols: { title: 'purpose' }, filter: { col: 'nope', value: 1 } }).some((e) => /filter column/.test(e))));
 });
 
-describe('known gaps from the codebase audit (not fixed; tracked as todo)', () => {
-  test('ungrouped count chart with no y should be rejected (the renderer needs y)', { todo: 'audit P1 #5: validator accepts it' }, () => {
-    assert.notDeepEqual(errsFor({ type: 'chart', slot: 'trips', kind: 'line', x: 'date', agg: 'count' }), []);
+describe('gaps from the codebase audit (fixed)', () => {
+  test('ungrouped count chart with no y is rejected (the renderer needs y)', () => {
+    const e = errsFor({ type: 'chart', slot: 'trips', kind: 'line', x: 'date', agg: 'count' });
+    assert.deepEqual(e, ['Block 1: chart needs a y number column.']);
   });
-  test('duplicate column keys should be rejected', { todo: 'audit P1 #6: validator accepts them' }, () => {
-    const s = base(); s.needs[0].columns.push({ key: 'Date', kind: 'date' });
-    assert.notDeepEqual(validateSpec(s), []);
+  test('grouped count chart with no y is still valid', () => {
+    assert.deepEqual(errsFor({ type: 'chart', slot: 'trips', kind: 'bar', x: 'purpose', groupBy: 'value', agg: 'count' }), []);
+  });
+  test('duplicate column keys are rejected', () => {
+    const s = base(); s.needs[0].columns.push({ key: 'miles', kind: 'number' });
+    assert.deepEqual(validateSpec(s), ['Slot "trips": duplicate column "miles".']);
+  });
+  test('column keys differing only by case are rejected', () => {
+    const s = base(); s.needs[0].columns.push({ key: 'Miles', kind: 'number' });
+    assert.deepEqual(validateSpec(s), ['Slot "trips": duplicate column "Miles".']);
   });
 });

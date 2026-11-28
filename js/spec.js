@@ -23,10 +23,15 @@ export function validateSpec(spec) {
     if (!['read', 'write'].includes(n.access)) errs.push(`Slot "${n.slot}": access must be "read" or "write".`);
     if (!Array.isArray(n.columns) || n.columns.length === 0) { errs.push(`Slot "${n.slot}": columns are required.`); continue; }
     const cols = {};
+    const seenKeys = new Set();
     for (const c of n.columns) {
       if (!c || !validIdent(c.key)) { errs.push(`Slot "${n.slot}": each column needs a key.`); continue; }
       if (c.key.toLowerCase() === 'id') errs.push(`Slot "${n.slot}": "id" is reserved.`);
       if (!KINDS.includes(c.kind)) errs.push(`Slot "${n.slot}", column "${c.key}": kind must be date, number or text.`);
+      // SQLite column names are case-insensitive, so "miles" and "Miles" collide.
+      const lower = c.key.toLowerCase();
+      if (seenKeys.has(lower)) errs.push(`Slot "${n.slot}": duplicate column "${c.key}".`);
+      seenKeys.add(lower);
       cols[c.key] = c;
     }
     slots[n.slot] = { need: n, cols };
@@ -63,7 +68,10 @@ export function validateSpec(spec) {
     if (b.type === 'chart') {
       if (!['line', 'bar'].includes(b.kind)) errs.push(`${at}: chart kind must be line or bar.`);
       if (b.agg && !AGGS.includes(b.agg)) errs.push(`${at}: agg must be one of ${AGGS.join(', ')}.`);
-      if (b.agg !== 'count' || b.y) col(b.y, ['number'], 'y');
+      // The renderer plots y-less charts only as grouped counts; otherwise y is required.
+      const yOptional = !!b.groupBy && b.agg === 'count';
+      if (b.y) col(b.y, ['number'], 'y');
+      else if (!yOptional) errs.push(`${at}: chart needs a y number column.`);
       const xc = col(b.x, ['date', 'text'], 'x');
       if (b.groupBy && !['value', 'month'].includes(b.groupBy)) errs.push(`${at}: groupBy must be "value" or "month".`);
       if (b.groupBy === 'month' && xc && xc.kind !== 'date') errs.push(`${at}: groupBy month needs a date x column.`);

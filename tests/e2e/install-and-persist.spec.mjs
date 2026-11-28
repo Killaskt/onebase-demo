@@ -40,8 +40,7 @@ test('create, install, add a row, reload: the row persists', async ({ page }) =>
   // Wait for the IndexedDB write, then reload.
   expect(await page.evaluate(async () => (await import('/js/db.js')).whenSaved())).toBe(true);
   await page.reload();
-  await expect(page.locator('.tile[data-id]').first()).toBeVisible();
-  await page.locator('.tile[data-id]', { hasText: 'Mileage Tracker' }).click();
+  // The interface that was open resumes by itself.
   await expect(page.locator('.item-title', { hasText: 'E2E client visit' })).toBeVisible();
   await expect(page.locator('.item-value').first()).toContainText('42.5');
 

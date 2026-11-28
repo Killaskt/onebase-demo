@@ -31,7 +31,8 @@ test('an edit that needs a new column extends the bound table instead of re-bind
   await expect(page.locator('.item-title', { hasText: 'Before the edit' })).toBeVisible();
 
   // Ask for a change that adds a column to the interface's needs.
-  await page.locator('[data-act="flip"][data-side="agent"]').click();
+  await page.locator('[data-act="drawer"]').click();
+  await page.locator('[data-act="agent-open"]').click();
   const chat = page.locator('form[data-form="chat"] [name="msg"]');
   await chat.fill('Add a notes field');
   await chat.press('Enter');
@@ -58,7 +59,6 @@ test('an edit that needs a new column extends the bound table instead of re-bind
   expect(info.rows).toEqual([{ purpose: 'Before the edit', miles: 42.5, notes: null }]);
 
   // The interface still lists the earlier row.
-  await page.locator('[data-act="flip"][data-side="use"]').click();
   await expect(page.locator('.item-title', { hasText: 'Before the edit' })).toBeVisible();
   expect(errors).toEqual([]);
 });

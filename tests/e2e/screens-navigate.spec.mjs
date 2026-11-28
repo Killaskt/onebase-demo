@@ -37,7 +37,7 @@ test('multi-screen interface: navigate, submit with then:"back", history, back a
   await page.reload();
 
   await page.locator('.tile[data-id="iscreens"]').click();
-  await expect(page.locator('.nav-title')).toHaveText('Run Log');
+  await expect(page.locator('.iface-head .large-title')).toHaveText('Run Log');
   await expect(page.locator('.screen-head')).toHaveCount(0);
   await expect(page.locator('.stat-value').first()).toHaveText('0');
 

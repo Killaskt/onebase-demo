@@ -28,6 +28,8 @@ test('create, install, add a row, reload: the row persists', async ({ page }) =>
   await expect(page.getByText('Mileage Tracker installed')).toBeVisible();
 
   // Add a row through the interface's form.
+  // The Mileage Tracker opens on its home screen; the form is one tap away.
+  await page.locator('[data-act="go"][data-to="add"]').click();
   const form = page.locator('form.form[data-form]').first();
   await form.locator('[name="date"]').fill('2026-11-20');
   await form.locator('[name="miles"]').fill('42.5');

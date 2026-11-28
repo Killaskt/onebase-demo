@@ -3,6 +3,7 @@
 import { test, describe, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { getKey, setKey, askModel } from '../../js/agent.js';
+import { validateSpec } from '../../js/spec.js';
 
 const KEY_STORE = 'onebase.apiKey';
 const FAKE = 'sk-ant-test-0000';
@@ -82,6 +83,22 @@ describe('request shape', () => {
     assert.match(body.messages[0].content, /"table":"games"/);
     assert.match(body.messages[0].content, /current spec/);
     assert.match(body.messages[0].content, /first\n\nsecond$/);
+  });
+});
+
+describe('system prompt', () => {
+  test('teaches screens, buttons and form then, and the app-developer rules', async () => {
+    mockFetch(textReply('Sure.'));
+    await ask();
+    const sys = calls[0].body.system;
+    for (const word of ['"screens"', '"button"', '"then"', 'reachable', 'primary', 'Training Log', 'workouts']) assert.ok(sys.includes(word), word);
+    assert.match(sys, /single screen only/);
+  });
+  test('its worked example is a valid spec', async () => {
+    mockFetch(textReply('Sure.'));
+    await ask();
+    const m = /```json\n([\s\S]*?)\n```/.exec(calls[0].body.system);
+    assert.deepEqual(validateSpec(JSON.parse(m[1])), []);
   });
 });
 

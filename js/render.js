@@ -1,5 +1,6 @@
 // Turns a spec + bindings into HTML and parameterised SQL. Nothing in a spec is ever executed as code.
 import { query, run, qi } from './db.js';
+import { screenById, homeScreenId, blockAt } from './spec.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -48,7 +49,8 @@ function colLabel(meta) {
 
 // ---- blocks ----
 
-function formBlock(b, i, h) {
+function formBlock(b, ref, h) {
+  const dl = ref.replace(/\./g, '-');
   const fields = b.fields.map((f) => {
     const meta = h.meta(b.slot, f.col);
     const label = esc(f.label || colLabel(meta));
@@ -65,15 +67,15 @@ function formBlock(b, i, h) {
       let list = '';
       if (f.suggest) {
         const vals = query(`SELECT DISTINCT ${h.C(b.slot, f.col)} AS v FROM ${h.T(b.slot)} WHERE ${h.C(b.slot, f.col)} IS NOT NULL ORDER BY 1 LIMIT 30`);
-        list = `<datalist id="dl-${i}-${name}">${vals.map((r) => `<option value="${esc(r.v)}">`).join('')}</datalist>`;
+        list = `<datalist id="dl-${dl}-${name}">${vals.map((r) => `<option value="${esc(r.v)}">`).join('')}</datalist>`;
       }
-      input = `<input type="text" name="${name}" placeholder="${esc(f.placeholder || '')}" ${f.suggest ? `list="dl-${i}-${name}"` : ''} autocomplete="off" required>${list}`;
+      input = `<input type="text" name="${name}" placeholder="${esc(f.placeholder || '')}" ${f.suggest ? `list="dl-${dl}-${name}"` : ''} autocomplete="off" required>${list}`;
     }
     return `<label class="row field"><span class="field-label">${label}</span>${input}</label>`;
   }).join('');
   return `<section class="block">
     ${b.title ? `<h3 class="block-title">${esc(b.title)}</h3>` : ''}
-    <form class="card form" data-form="${i}">
+    <form class="card form" data-form="${esc(ref)}">
       ${fields}
       <div class="form-foot"><button class="btn primary" type="submit">${esc(b.submit || 'Save')}</button>
       <span class="hint">Writes to <b>${esc(h.table(b.slot))}</b></span></div>
@@ -183,7 +185,7 @@ export function ruleOptions(iface, b) {
   return { sorts, filters };
 }
 
-function listBlock(b, i, h, iface, open) {
+function listBlock(b, ref, h, iface, open) {
   const keys = [...new Set([b.cols.title, b.cols.subtitle, b.cols.value].filter(Boolean))];
   const sel = keys.map((k) => `${h.C(b.slot, k)} AS ${qi(k)}`).join(', ');
   const params = [];
@@ -198,42 +200,65 @@ function listBlock(b, i, h, iface, open) {
       ${b.cols.subtitle ? `<span class="item-sub">${esc(fmt(r[b.cols.subtitle], m(b.cols.subtitle)))}</span>` : ''}</span>
       ${b.cols.value ? `<span class="item-value">${esc(fmt(r[b.cols.value], m(b.cols.value)))}</span>` : ''}
     </div>`).join('');
-  const rule = b.rule ? `<button class="rule-bar" data-act="edit-rule" data-block="${i}">
+  const rule = b.rule ? `<button class="rule-bar" data-act="edit-rule" data-block="${esc(ref)}">
       <span class="rule-text"><span class="rule-cap">Ranking rule</span>${esc(describeRule(b, iface))}</span><span class="rule-edit">${open ? 'Done' : 'Edit ranking rule'}</span></button>` : '';
   let panel = '';
   if (b.rule && open) {
     const o = ruleOptions(iface, b);
     const cur = b.sort ? `${b.sort.col}:${b.sort.dir}` : '';
     panel = `<div class="rule-panel">
-      <label class="row field"><span class="field-label">Sort by</span><select data-change="rule-sort" data-block="${i}">${o.sorts.map((s) => `<option value="${esc(s.col)}:${s.dir}" ${cur === `${s.col}:${s.dir}` ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}</select></label>
-      ${o.filters.map((f) => `<label class="row field"><span class="field-label">Only ${esc(f.label.toLowerCase())}</span><select data-change="rule-filter" data-col="${esc(f.col)}" data-block="${i}"><option value="">All</option>${f.values.map((v) => `<option ${b.filter && b.filter.col === f.col && b.filter.value === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>`).join('')}
-      <label class="row field"><span class="field-label">Show</span><select data-change="rule-limit" data-block="${i}">${[...new Set([3, 5, 10, Number(b.limit) || 5])].sort((x, y) => x - y).map((n) => `<option value="${n}" ${Number(b.limit) === n ? 'selected' : ''}>Top ${n}</option>`).join('')}</select></label>
+      <label class="row field"><span class="field-label">Sort by</span><select data-change="rule-sort" data-block="${esc(ref)}">${o.sorts.map((s) => `<option value="${esc(s.col)}:${s.dir}" ${cur === `${s.col}:${s.dir}` ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}</select></label>
+      ${o.filters.map((f) => `<label class="row field"><span class="field-label">Only ${esc(f.label.toLowerCase())}</span><select data-change="rule-filter" data-col="${esc(f.col)}" data-block="${esc(ref)}"><option value="">All</option>${f.values.map((v) => `<option ${b.filter && b.filter.col === f.col && b.filter.value === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>`).join('')}
+      <label class="row field"><span class="field-label">Show</span><select data-change="rule-limit" data-block="${esc(ref)}">${[...new Set([3, 5, 10, Number(b.limit) || 5])].sort((x, y) => x - y).map((n) => `<option value="${n}" ${Number(b.limit) === n ? 'selected' : ''}>Top ${n}</option>`).join('')}</select></label>
     </div>`;
   }
   return `<section class="block">${b.title ? `<h3 class="block-title">${esc(b.title)}</h3>` : ''}
     <div class="card">${rule}${panel}${items || `<p class="empty">${b.rule || (b.filter && b.filter.value != null) ? 'Nothing matches this rule.' : 'Nothing here yet.'}</p>`}</div></section>`;
 }
 
-export function renderBlocks(iface, opts = {}) {
-  const h = helpers(iface);
-  return iface.spec.blocks.map((b, i) => {
-    try {
-      if (b.type === 'form') return formBlock(b, i, h);
-      if (b.type === 'stats') return statsBlock(b, h);
-      if (b.type === 'chart') return chartBlock(b, h);
-      if (b.type === 'list') return listBlock(b, i, h, iface, opts.ruleOpen === i);
-      if (b.type === 'note') return `<section class="block"><p class="note-block">${esc(b.text)}</p></section>`;
-      return '';
-    } catch (e) {
-      console.error(e);
-      return `<section class="block"><div class="card pad"><p class="empty">This block can't reach its table. Check the bindings in the menu.</p></div></section>`;
-    }
-  }).join('');
+// A run of consecutive link buttons shares one grouped card, like an iOS settings list.
+function buttonBlock(b, group) {
+  const to = esc(b.to);
+  const style = b.style || 'primary';
+  if (style === 'link') {
+    return `<button class="row action nav-link" data-act="go" data-to="${to}"><span class="nav-link-label">${esc(b.label)}</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="chev"><path d="M9 5l7 7-7 7"/></svg></button>`;
+  }
+  return `<section class="block"><button class="btn ${style === 'primary' ? 'primary ' : ''}wide" data-act="go" data-to="${to}">${esc(b.label)}</button></section>`;
 }
 
-// Insert a row from a form block. Returns the table written to.
-export function submitForm(iface, blockIndex, formData) {
-  const b = iface.spec.blocks[blockIndex];
+export function renderScreen(iface, screenId, opts = {}) {
+  const h = helpers(iface);
+  const screen = screenById(iface.spec, screenId) || screenById(iface.spec, homeScreenId(iface.spec));
+  const out = [];
+  let links = null;
+  const flush = () => { if (links) { out.push(`<section class="block"><div class="card">${links.join('')}</div></section>`); links = null; } };
+  (screen.blocks || []).forEach((b, i) => {
+    const ref = `${screen.id}.${i}`;
+    try {
+      if (b.type === 'button' && b.style === 'link') { (links ||= []).push(buttonBlock(b)); return; }
+      flush();
+      if (b.type === 'form') out.push(formBlock(b, ref, h));
+      else if (b.type === 'stats') out.push(statsBlock(b, h));
+      else if (b.type === 'chart') out.push(chartBlock(b, h));
+      else if (b.type === 'list') out.push(listBlock(b, ref, h, iface, opts.ruleOpen === ref));
+      else if (b.type === 'button') out.push(buttonBlock(b));
+      else if (b.type === 'note') out.push(`<section class="block"><p class="note-block">${esc(b.text)}</p></section>`);
+    } catch (e) {
+      console.error(e);
+      out.push(`<section class="block"><div class="card pad"><p class="empty">This block can't reach its table. Check the bindings in the menu.</p></div></section>`);
+    }
+  });
+  flush();
+  return out.join('');
+}
+
+export function renderBlocks(iface, opts = {}) {
+  return renderScreen(iface, homeScreenId(iface.spec), opts);
+}
+
+// Insert a row from a form block (addressed by ref). Returns the table written to and where to go next.
+export function submitForm(iface, ref, formData) {
+  const b = blockAt(iface.spec, ref);
   const h = helpers(iface);
   if (!b || b.type !== 'form') throw new Error('Not a form');
   if (iface.bindings[b.slot].access !== 'write') throw new Error('This interface only has read access to that table.');
@@ -251,5 +276,5 @@ export function submitForm(iface, blockIndex, formData) {
     vals.push(v);
   }
   run(`INSERT INTO ${h.T(b.slot)} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`, vals);
-  return h.table(b.slot);
+  return { table: h.table(b.slot), then: b.then || null };
 }

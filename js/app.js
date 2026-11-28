@@ -5,8 +5,8 @@ import {
 } from './db.js';
 import { createWriterLock } from './lock.js';
 import { seed, isSeeded, ensureMeta, META_SQL, CATALOG } from './seed.js';
-import { validateSpec, candidates, matchTable, reconcile, accessLabel } from './spec.js';
-import { renderBlocks, submitForm, describeRule, esc, fmtDate } from './render.js';
+import { validateSpec, candidates, matchTable, reconcile, accessLabel, homeScreenId, screenById, blockAt } from './spec.js';
+import { renderScreen, submitForm, describeRule, esc, fmtDate } from './render.js';
 import { getKey, setKey, askModel, scriptedNew, scriptedEdit, scriptedSuggestions, SCRIPTED_NEW } from './agent.js';
 
 const $app = document.getElementById('app');
@@ -284,6 +284,14 @@ function newScreen() {
   ${composer(v.draft || getKey() ? [] : SCRIPTED_NEW.map((s) => s.prompt), 'Describe an interface…', v.busy)}`;
 }
 
+// The open interface's screen stack, reset to home when its top screen no longer exists
+// (after an agent edit, undo or restore).
+function screenStack(iface) {
+  const v = state.view;
+  if (!Array.isArray(v.stack) || !v.stack.length || !v.stack.every((id) => screenById(iface.spec, id))) v.stack = [homeScreenId(iface.spec)];
+  return v.stack;
+}
+
 function ifaceScreen() {
   const v = state.view;
   const iface = getIface(v.id);
@@ -294,7 +302,10 @@ function ifaceScreen() {
     <div class="flip" role="tablist"><button class="${v.side === 'use' ? 'on' : ''}" data-act="flip" data-side="use">Interface</button><button class="${v.side === 'agent' ? 'on' : ''}" data-act="flip" data-side="agent">Agent session</button></div>`;
   if (v.side === 'use') {
     const foot = Object.values(iface.bindings).map((b) => `<b>${esc(b.table)}</b> (${accessLabel(b.access).toLowerCase()})`).join(', ');
-    return `${nav}<main class="scroll">${renderBlocks(iface, { ruleOpen: v.ruleOpen })}<p class="foot-note">Bound to ${foot}. Deleting this interface keeps the data.</p></main>`;
+    const stack = screenStack(iface);
+    const top = stack[stack.length - 1];
+    const head = stack.length > 1 ? `<div class="screen-head"><button class="nav-back" data-act="go" data-to="back" aria-label="Back">${ICON.back}</button><span class="screen-title">${esc(screenById(iface.spec, top).title)}</span></div>` : '';
+    return `${nav}<main class="scroll">${head}${renderScreen(iface, top, { ruleOpen: v.ruleOpen })}<p class="foot-note">Bound to ${foot}. Deleting this interface keeps the data.</p></main>`;
   }
   const last = vs[vs.length - 1];
   return `${nav}
@@ -451,7 +462,7 @@ function render() {
     return;
   }
   const v = state.view;
-  const key = v ? `${v.type}:${v.id || ''}:${v.side || ''}` : `tab:${state.tab}`;
+  const key = v ? `${v.type}:${v.id || ''}:${v.side || ''}:${v.stack ? v.stack[v.stack.length - 1] : ''}` : `tab:${state.tab}`;
   const old = $app.querySelector('.scroll');
   const keep = old && key === lastKey ? old.scrollTop : 0;
   let body;
@@ -554,10 +565,10 @@ function doUndo(id) {
   if (r.missing.length) openBind(iface.spec, { mode: 'edit', ifaceId: id, bindings: iface.bindings });
 }
 
-function changeRule(blockIndex, mutate) {
+function changeRule(ref, mutate) {
   const iface = getIface(state.view.id);
   const spec = clone(iface.spec);
-  const b = spec.blocks[blockIndex];
+  const b = blockAt(spec, ref);
   if (!b || b.type !== 'list') return;
   mutate(b);
   saveSpec(iface.id, spec, `Rule: ${describeRule(b, { ...iface, spec })}`);
@@ -683,8 +694,16 @@ const actions = {
     render();
   },
   'edit-rule'(el) {
-    const i = Number(el.dataset.block);
-    state.view.ruleOpen = state.view.ruleOpen === i ? null : i;
+    const ref = el.dataset.block;
+    state.view.ruleOpen = state.view.ruleOpen === ref ? null : ref;
+    render();
+  },
+  go(el) {
+    const v = state.view;
+    if (!v || v.type !== 'iface') return;
+    const stack = screenStack(getIface(v.id));
+    if (el.dataset.to === 'back') { if (stack.length > 1) stack.pop(); } else stack.push(el.dataset.to);
+    v.ruleOpen = null;
     render();
   },
   'retry-save'() { retrySave().then((ok) => { toast(ok ? 'Saved' : 'Still not saved'); render(); }); },
@@ -781,7 +800,9 @@ $app.addEventListener('submit', (e) => {
     return;
   }
   try {
-    const table = submitForm(getIface(state.view.id), Number(kind), new FormData(form));
+    const iface = getIface(state.view.id);
+    const { table, then } = submitForm(iface, kind, new FormData(form));
+    if (then) actions.go({ dataset: { to: then } });
     toast(`Saving to ${table}…`);
     whenSaved().then((ok) => {
       if (ok) { toast(`Saved to ${table}`); requestPersistence(); } else { state.toast = null; }
@@ -798,9 +819,9 @@ $app.addEventListener('change', (e) => {
   const c = el.dataset.change;
   if (c === 'restore-file') { pickRestoreFile(el); return; }
   if (c === 'bind-table') { state.sheet.choice[el.dataset.slot].table = el.value; state.sheet.error = null; render(); }
-  if (c === 'rule-sort') { const [col, dir] = el.value.split(':'); changeRule(Number(el.dataset.block), (b) => { b.sort = { col, dir }; }); }
-  if (c === 'rule-filter') changeRule(Number(el.dataset.block), (b) => { b.filter = el.value === '' ? null : { col: el.dataset.col, value: el.value }; });
-  if (c === 'rule-limit') changeRule(Number(el.dataset.block), (b) => { b.limit = Number(el.value); });
+  if (c === 'rule-sort') { const [col, dir] = el.value.split(':'); changeRule(el.dataset.block, (b) => { b.sort = { col, dir }; }); }
+  if (c === 'rule-filter') changeRule(el.dataset.block, (b) => { b.filter = el.value === '' ? null : { col: el.dataset.col, value: el.value }; });
+  if (c === 'rule-limit') changeRule(el.dataset.block, (b) => { b.limit = Number(el.value); });
 });
 
 $app.addEventListener('input', (e) => {

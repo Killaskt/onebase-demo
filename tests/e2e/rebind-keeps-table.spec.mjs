@@ -21,6 +21,8 @@ test('an edit that needs a new column extends the bound table instead of re-bind
   await sheet.locator('input[data-input="bind-name"]').fill('work_trips');
   await sheet.locator('[data-act="bind-allow"]').click();
   await expect(page.getByText('Mileage Tracker installed')).toBeVisible();
+  // The Mileage Tracker opens on its home screen; the form is one tap away.
+  await page.locator('[data-act="go"][data-to="add"]').click();
   const form = page.locator('form.form[data-form]').first();
   await form.locator('[name="date"]').fill('2026-11-20');
   await form.locator('[name="miles"]').fill('42.5');

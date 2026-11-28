@@ -293,6 +293,11 @@ svg.sm { width: 15px; height: 15px; flex: none; }
 .sheet-actions .btn { flex: 1; }
 .action { width: 100%; color: var(--accent); font-size: 16.5px; }
 .action.danger { color: var(--danger); }
+.nav-link { justify-content: space-between; text-align: left; }
+.nav-link-label { flex: 1; }
+.screen-head { display: flex; align-items: center; gap: 4px; padding: 2px 0 10px; }
+.screen-head .nav-back { min-width: 0; padding-right: 8px; }
+.screen-title { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .need { padding: 12px 0 10px; }
 .need-head { display: flex; justify-content: space-between; align-items: center; padding: 0 14px; font-size: 16px; }
 .need-cols { padding: 3px 14px 8px; font-size: 13px; color: var(--muted); }

@@ -272,6 +272,17 @@ const EDITS = [
       return { reply: `Added a bar chart: "${title}". It uses the same table, so no new access is needed.`, spec, note: `Added chart by ${t.key}` };
     },
   },
+  {
+    chip: () => 'Add a notes field',
+    applies: (spec) => { const f = firstOf(spec, 'form'); const n = f && spec.needs.find((x) => x.slot === f.slot); return !!n && !n.columns.some((c) => c.key === 'notes'); },
+    match: /\bnotes?\b|\bcomments?\b/i,
+    run: (spec) => {
+      const f = firstOf(spec, 'form');
+      spec.needs.find((x) => x.slot === f.slot).columns.push({ key: 'notes', kind: 'text', label: 'Notes' });
+      f.fields.push({ col: 'notes', label: 'Notes', placeholder: 'Anything to remember' });
+      return { reply: 'Added a Notes field to the form. It needs one more text column in your table, so the next step will offer to add it. Existing rows are kept.', spec, note: 'Added notes field' };
+    },
+  },
 ];
 
 export function scriptedSuggestions(spec) {

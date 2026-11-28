@@ -1,6 +1,6 @@
 import {
   openFromStore, loadSql, claimWriter, setWritable, isWritable, onSaveState, getSaveState, retrySave, whenSaved,
-  query, batch, run, userTables, columns, rowCount, schemaSummary, createTable, exportBytes, validIdent, qi,
+  query, batch, run, userTables, columns, rowCount, schemaSummary, createTable, addColumns, exportBytes, validIdent, qi,
   NotOwnerError, ExistsError, inspectSqlite, replaceWith,
 } from './db.js';
 import { createWriterLock } from './lock.js';
@@ -306,19 +306,37 @@ function ifaceScreen() {
 
 // ---------- sheets ----------
 
+// A table that is only missing some needed columns can be extended instead of replaced.
+// Returns the columns to add, or null when the table fits already or can't be fixed by adding.
+function extendWith(need, table) {
+  if (matchTable(need, table).ok) return null;
+  const cols = columns(table);
+  const missing = [];
+  for (const c of need.columns) {
+    const hit = cols.find((t) => t.name.toLowerCase() === c.key.toLowerCase());
+    if (!hit) { if (c.key.toLowerCase() === 'id') return null; missing.push(c); } else if (hit.kind !== c.kind) return null;
+  }
+  return missing.length ? missing : null;
+}
+
 function bindSheet(s) {
   const tables = userTables();
   const needs = s.spec.needs.map((need) => {
     const c = candidates(need);
     const choice = s.choice[need.slot];
-    const opts = [...c.all].sort((a, b) => (b.table === c.suggested) - (a.table === c.suggested) || b.ok - a.ok).map((m) => `<option value="${esc(m.table)}" ${choice.table === m.table ? 'selected' : ''} ${m.ok ? '' : 'disabled'}>${esc(m.table)}${m.table === c.suggested ? ' (suggested)' : m.ok ? '' : ' (columns don\'t fit)'}</option>`).join('');
+    const ext = {};
+    for (const m of c.all) if (!m.ok) { const x = extendWith(need, m.table); if (x) ext[m.table] = x; }
+    const opts = [...c.all].sort((a, b) => (b.table === c.suggested) - (a.table === c.suggested) || (b.ok || !!ext[b.table]) - (a.ok || !!ext[a.table])).map((m) => `<option value="${esc(m.table)}" ${choice.table === m.table ? 'selected' : ''} ${m.ok || ext[m.table] ? '' : 'disabled'}>${esc(m.table)}${m.table === c.suggested ? ' (suggested)' : ext[m.table] ? ` (adds ${ext[m.table].map((x) => esc(x.key)).join(', ')})` : m.ok ? '' : ' (columns don\'t fit)'}</option>`).join('');
     let detail;
     if (choice.table === '__new__') {
       detail = `<label class="row field"><span class="field-label">Name</span><input type="text" data-input="bind-name" data-slot="${esc(need.slot)}" value="${esc(choice.newName)}" autocapitalize="off" autocomplete="off"></label>
         <p class="map">A new empty table with ${need.columns.map((x) => esc(x.key)).join(', ')}.</p>`;
     } else {
+      const add = extendWith(need, choice.table);
       const m = matchTable(need, choice.table);
-      detail = `<p class="map">${need.columns.map((x) => `${esc(x.key)} → ${esc(m.columns[x.key] || '?')}`).join(' · ')}</p>`;
+      const rest = need.columns.filter((x) => !add || !add.includes(x));
+      detail = `${add ? `<p class="map">Adds column ${add.map((x) => `${esc(x.key)} (${esc(x.kind)})`).join(', ')} to ${esc(choice.table)}. Existing rows keep their data; the new column starts empty.</p>` : ''}
+        ${rest.length ? `<p class="map">${rest.map((x) => `${esc(x.key)} → ${esc(m.columns[x.key] || '?')}`).join(' · ')}</p>` : ''}`;
     }
     return `<div class="card need">
       <div class="need-head"><b>${esc(need.label || need.slot)}</b><span class="badge ${need.access}">${accessLabel(need.access)}</span></div>
@@ -345,7 +363,13 @@ function openBind(spec, opts) {
     const taken = userTables();
     let newName = need.slot;
     for (let n = 2; taken.includes(newName); n++) newName = `${need.slot}_${n}`;
-    choice[need.slot] = { table: cur && taken.includes(cur.table) && matchTable(need, cur.table).ok ? cur.table : c.suggested || '__new__', newName };
+    const fits = (t) => taken.includes(t) && (matchTable(need, t).ok || !!extendWith(need, t));
+    let pick = cur && fits(cur.table) ? cur.table : null;
+    // A renamed slot has no binding of its own: try the tables of bindings the new spec no longer uses.
+    if (!pick && !cur && opts.bindings) {
+      pick = Object.keys(opts.bindings).filter((k) => !spec.needs.some((n) => n.slot === k)).map((k) => opts.bindings[k].table).find(fits) || null;
+    }
+    choice[need.slot] = { table: pick || c.suggested || '__new__', newName };
   }
   state.sheet = { kind: 'bind', spec, choice, fresh: true, ...opts };
   render();
@@ -610,6 +634,7 @@ const actions = {
     const s = state.sheet;
     const bindings = {};
     const toCreate = [];
+    const toExtend = [];
     const existing = userTables();
     for (const need of s.spec.needs) {
       const c = s.choice[need.slot];
@@ -622,6 +647,8 @@ const actions = {
         for (const col of need.columns) cols[col.key] = col.key;
         bindings[need.slot] = { table: name, columns: cols, access: need.access };
       } else {
+        const add = extendWith(need, c.table);
+        if (add) { toExtend.push({ need, table: c.table, cols: add }); continue; }
         const m = matchTable(need, c.table);
         if (!m.ok) { s.error = `"${c.table}" doesn't have the columns this needs.`; render(); return; }
         const prev = s.bindings && s.bindings[need.slot];
@@ -629,6 +656,15 @@ const actions = {
       }
     }
     for (const t of toCreate) createTable(t.name, t.need.columns);
+    // Validation passed: add the missing columns (the statements run now), then bind as usual.
+    for (const a of toExtend) {
+      // Re-check right before altering: an earlier need may already have added the same column.
+      const still = extendWith(a.need, a.table);
+      if (still) addColumns(a.table, still);
+      const m = matchTable(a.need, a.table);
+      const prev = s.bindings && s.bindings[a.need.slot];
+      bindings[a.need.slot] = { table: a.table, columns: prev && prev.table === a.table ? { ...m.columns, ...prev.columns } : m.columns, access: a.need.access };
+    }
     state.sheet = null;
     if (s.mode === 'install') {
       const id = installInterface(s.spec, bindings, s.chat, s.source);
